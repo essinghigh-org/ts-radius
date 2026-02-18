@@ -1,6 +1,7 @@
 import dgram from "dgram";
 import crypto from "crypto";
-import type { Logger, RadiusResult, RadiusProtocolOptions } from "./types";
+import type { Logger, RadiusResult, RadiusProtocolOptions, ParsedRadiusAttribute } from "./types";
+import { decodeAttribute } from "./helpers";
 
 // Minimal RADIUS client using UDP for Access-Request/Accept exchange.
 // This is intentionally small and supports only PAP (User-Password) and Class attribute extraction.
@@ -111,12 +112,13 @@ export async function radiusAuthenticate(
         if (logger) logger.warn('[radius] response authenticator verification error', e);
       }
 
-      // 2 = Access-Accept, 3 = Access-Reject
-      if (code === 2) {
+      // 2 = Access-Accept, 3 = Access-Reject, 11 = Access-Challenge
+      if (code === 2 || code === 3 || code === 11) {
         // parse attributes for Class (type 25) - handle multiple classes and validate properly
         let offset = 20;
         let foundClass: string | undefined = undefined;
         const allClasses: string[] = [];
+        const parsedAttributes: ParsedRadiusAttribute[] = [];
 
         while (offset + 2 <= msg.length) {
           const t = msg.readUInt8(offset);
@@ -136,7 +138,14 @@ export async function radiusAuthenticate(
 
           const value = msg.slice(offset + 2, offset + l);
 
-          // Check if this is our target attribute
+          // NEW: Generic parsing
+          try {
+            parsedAttributes.push(decodeAttribute(t, value));
+          } catch (e) {
+             if (logger) logger.warn('[radius] error decoding attribute', { type: t, error: e });
+          }
+
+          // Check if this is our target attribute (Legacy logic preserved)
           let isTargetAttribute = false;
           let extractedValue: string | undefined = undefined;
 
@@ -199,9 +208,23 @@ export async function radiusAuthenticate(
           offset += l;
         }
 
-        resolve({ ok: true, class: foundClass, raw: msg.toString("hex") });
+        const isOk = (code === 2);
+        let errorString: string | undefined = undefined;
+        if (!isOk) {
+            if (code === 3) errorString = 'access_reject';
+            else if (code === 11) errorString = 'access_challenge';
+            else errorString = 'unknown_code';
+        }
+
+        resolve({
+            ok: isOk,
+            class: foundClass,
+            attributes: parsedAttributes,
+            raw: msg.toString("hex"),
+            error: errorString
+        });
       } else {
-        resolve({ ok: false, raw: msg.toString("hex"), error: code === 3 ? 'access_reject' : 'unknown_code' });
+        resolve({ ok: false, raw: msg.toString("hex"), error: 'unknown_code' });
       }
     });
 

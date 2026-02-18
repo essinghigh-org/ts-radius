@@ -20,9 +20,27 @@ export class ConsoleLogger implements Logger {
   }
 }
 
+export interface ParsedAttribute {
+  id: number;
+  name: string;
+  value: any;
+  raw: string; // Hex string of value for reference
+}
+
+export interface VendorSpecificAttribute {
+  id: 26;
+  name: "Vendor-Specific";
+  vendorId: number;
+  value: any; // If parsed, structure; else hex string
+  raw: string;
+}
+
+export type ParsedRadiusAttribute = ParsedAttribute | VendorSpecificAttribute;
+
 export interface RadiusResult {
   ok: boolean;
   class?: string;
+  attributes?: ParsedRadiusAttribute[];
   raw?: string;
   error?: string;
 }
