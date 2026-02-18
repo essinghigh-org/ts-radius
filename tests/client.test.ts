@@ -4,10 +4,16 @@ import type { RadiusConfig, RadiusResult } from '../src/types';
 
 // State for mock
 let responsiveHosts: Set<string> = new Set();
+// Hosts that return Access-Reject (still alive)
+let rejectingHosts: Set<string> = new Set();
 
 // Mock the protocol layer
 mock.module('../src/protocol', () => ({
   radiusAuthenticate: async (host: string, username: string, password: string, options: any, logger: any): Promise<RadiusResult> => {
+    if (rejectingHosts.has(host)) {
+      // Simulate Access-Reject (server alive but auth failed)
+      return { ok: false, error: 'access_reject' };
+    }
     if (!responsiveHosts.has(host)) {
       // Simulate timeout
       return { ok: false, error: 'timeout' };
@@ -31,6 +37,7 @@ describe('RadiusClient Failover', () => {
 
   beforeEach(() => {
     responsiveHosts = new Set(['10.0.0.1']);
+    rejectingHosts = new Set();
     client = new RadiusClient(config);
   });
 
@@ -104,5 +111,22 @@ describe('RadiusClient Failover', () => {
     // Next auth should succeed on 10.0.0.2
     res = await client.authenticate('user', 'pass');
     expect(res.ok).toBe(true);
+  });
+
+  test('host returning Access-Reject is considered healthy and does not trigger failover', async () => {
+    // 10.0.0.1 responds with Access-Reject (e.g. invalid creds)
+    responsiveHosts = new Set(['10.0.0.1']);
+    rejectingHosts = new Set(['10.0.0.1']);
+
+    // Auth should fail
+    const res = await client.authenticate('user', 'pass');
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('access_reject');
+
+    // Should NOT trigger failover
+    // Wait a bit to ensure async failover didn't happen
+    await new Promise(r => setTimeout(r, config.healthCheckTimeoutMs! + 50));
+
+    expect(client.getActiveHost()).toBe('10.0.0.1');
   });
 });

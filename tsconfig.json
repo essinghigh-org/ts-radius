@@ -5,7 +5,6 @@
     "module": "ESNext",
     "moduleDetection": "force",
     "types": ["bun-types"],
-    "allowJs": true,
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
@@ -15,11 +14,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": false,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
+    "noPropertyAccessFromIndexSignature": false
   },
   "include": ["src", "tests"]
 }

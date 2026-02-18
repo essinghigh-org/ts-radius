@@ -7,7 +7,7 @@ export interface Logger {
 
 export class ConsoleLogger implements Logger {
   debug(message: string, ...args: any[]): void {
-    console.debug(`[debug] ${message}`, ...args);
+    console.log(`[debug] ${message}`, ...args);
   }
   info(message: string, ...args: any[]): void {
     console.info(`[info] ${message}`, ...args);
