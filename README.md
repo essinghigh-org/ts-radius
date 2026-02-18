@@ -16,7 +16,7 @@ A standards-compliant RADIUS client for TypeScript/Bun, extracted from a product
 Install directly from GitHub:
 
 ```bash
-bun add github:essinghigh-org/ts-radius-client
+bun add github:essinghigh-org/ts-radius
 ```
 
 ## Usage
@@ -62,7 +62,8 @@ try {
 | `port` | `number` | `1812` | RADIUS port. |
 | `timeoutMs` | `number` | `5000` | Request timeout in milliseconds. |
 | `healthCheckIntervalMs` | `number` | `1800000` | (30m) Interval for background health checks. |
-| `healthCheckUser` | `string` | `grafana_dummy_user` | Username for health probes. |
+| `healthCheckUser` | `string` | (Required) | Username for health probes. |
+| `healthCheckPassword` | `string` | (Required) | Password for health probes. |
 | `assignmentAttributeId` | `number` | `25` | Attribute ID to extract (e.g., 25 for Class). |
 
 ## License
