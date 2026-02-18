@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { RadiusClient } from '../src/client';
-import { RadiusConfig, RadiusResult } from '../src/types';
+import type { RadiusConfig, RadiusResult } from '../src/types';
 
 // State for mock
 let responsiveHosts: Set<string> = new Set();

@@ -5,6 +5,7 @@
       "name": "/app",
       "devDependencies": {
         "@types/bun": "latest",
+        "@types/node": "^25.2.3",
       },
       "peerDependencies": {
         "typescript": "^5",

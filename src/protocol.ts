@@ -1,6 +1,6 @@
 import dgram from "dgram";
 import crypto from "crypto";
-import { Logger, RadiusResult, RadiusProtocolOptions } from "./types";
+import type { Logger, RadiusResult, RadiusProtocolOptions } from "./types";
 
 // Minimal RADIUS client using UDP for Access-Request/Accept exchange.
 // This is intentionally small and supports only PAP (User-Password) and Class attribute extraction.

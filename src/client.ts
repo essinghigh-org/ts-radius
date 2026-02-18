@@ -1,5 +1,5 @@
 import { radiusAuthenticate } from "./protocol";
-import { RadiusConfig, RadiusResult, Logger, ConsoleLogger } from "./types";
+import { type RadiusConfig, type RadiusResult, type Logger, ConsoleLogger } from "./types";
 
 interface HostHealth {
   host: string;
@@ -19,6 +19,9 @@ export class RadiusClient {
 
   constructor(config: RadiusConfig, logger?: Logger) {
     this.config = config;
+    if (!this.config.secret) {
+      throw new Error('[radius-client] config.secret is required');
+    }
     this.logger = logger || new ConsoleLogger();
     this.reloadHostsFromConfig();
     this.selectInitialActive();
@@ -148,21 +151,27 @@ export class RadiusClient {
   }
 
   public async failover(): Promise<string | null> {
-    // Try next hosts in order starting after current active
-    const startIndex = this.activeHost ? this.hosts.indexOf(this.activeHost) + 1 : 0;
-    const ordered = [...this.hosts.slice(startIndex), ...this.hosts.slice(0, startIndex)];
-    for (const host of ordered) {
-      if (host === this.activeHost) continue;
-      const ok = await this.probeHost(host);
-      if (ok) {
-        this.setActiveHost(host, 'failover');
-        return host;
+    if (this.inProgress) return null;
+    this.inProgress = true;
+    try {
+      // Try next hosts in order starting after current active
+      const startIndex = this.activeHost ? this.hosts.indexOf(this.activeHost) + 1 : 0;
+      const ordered = [...this.hosts.slice(startIndex), ...this.hosts.slice(0, startIndex)];
+      for (const host of ordered) {
+        if (host === this.activeHost) continue;
+        const ok = await this.probeHost(host);
+        if (ok) {
+          this.setActiveHost(host, 'failover');
+          return host;
+        }
       }
+      // None responded; clear active host so next cycle re-attempts from first
+      this.logger.warn('[radius-client] failover sequence found no responsive hosts');
+      this.activeHost = null;
+      return null;
+    } finally {
+      this.inProgress = false;
     }
-    // None responded; clear active host so next cycle re-attempts from first
-    this.logger.warn('[radius-client] failover sequence found no responsive hosts');
-    this.activeHost = null;
-    return null;
   }
 
   private async probeHost(host: string): Promise<boolean> {
@@ -184,30 +193,27 @@ export class RadiusClient {
 
       const res = await radiusAuthenticate(host, hcUser, hcPass, protocolOptions, this.logger);
 
-      if (res.ok || (res.error !== 'timeout' && res.error !== 'malformed_response')) {
-        // Any response (accept/reject) counts as alive. Timeout or malformed counts as dead.
-        if (res.ok) {
-           entry.lastOkAt = Date.now();
-           entry.consecutiveFailures = 0;
-           this.logger.debug('[radius-client] probe success', { host });
-           return true;
-        }
+      // Any response (accept/reject) counts as alive. Timeout or malformed counts as dead.
+      if (res.ok) {
+         entry.lastOkAt = Date.now();
+         entry.consecutiveFailures = 0;
+         this.logger.debug('[radius-client] probe success', { host });
+         return true;
+      }
 
-        if (res.error === 'timeout' || res.error === 'malformed_response') {
-           entry.consecutiveFailures++;
-           this.logger.debug('[radius-client] probe failed (timeout/malformed)', { host });
-           return false;
-        }
-
-        // If we got here, it's a valid RADIUS response (likely Access-Reject), so the server is alive.
-        entry.consecutiveFailures++; // Still a failure to authenticate (dummy creds), but server is up.
-        this.logger.debug('[radius-client] probe negative response (server alive)', { host });
-        return true;
-
-      } else {
-         // This else block is unreachable due to logic above, but safety.
+      if (res.error === 'timeout' || res.error === 'malformed_response') {
+         entry.consecutiveFailures++;
+         this.logger.debug('[radius-client] probe failed (timeout/malformed)', { host });
          return false;
       }
+
+      // If we got here, it's a valid RADIUS response (likely Access-Reject), so the server is alive.
+      // We do NOT increment consecutiveFailures because the server responded.
+      // It failed authentication (expected with dummy creds), but the host is healthy.
+      entry.lastOkAt = Date.now();
+      entry.consecutiveFailures = 0;
+      this.logger.debug('[radius-client] probe negative response (server alive)', { host });
+      return true;
 
     } catch (e) {
       entry.consecutiveFailures++;
