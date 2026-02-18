@@ -24,7 +24,9 @@ describe('RadiusClient Failover', () => {
     secret: 'secret',
     timeoutMs: 100,
     healthCheckIntervalMs: 1000,
-    healthCheckTimeoutMs: 100
+    healthCheckTimeoutMs: 100,
+    healthCheckUser: 'test_health_user',
+    healthCheckPassword: 'test_health_password'
   };
 
   beforeEach(() => {

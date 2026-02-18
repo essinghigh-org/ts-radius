@@ -13,6 +13,9 @@ export async function radiusAuthenticate(
   logger?: Logger
 ): Promise<RadiusResult> {
   const secret = options.secret;
+  if (!secret) {
+    throw new Error('RADIUS secret is required and cannot be empty');
+  }
   const port = options.port || 1812;
   const timeoutMs = options.timeoutMs || 5000;
 

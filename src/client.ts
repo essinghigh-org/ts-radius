@@ -22,6 +22,9 @@ export class RadiusClient {
     if (!this.config.secret) {
       throw new Error('[radius-client] config.secret is required');
     }
+    if (!this.config.healthCheckUser || !this.config.healthCheckPassword) {
+      throw new Error('[radius-client] health check credentials (healthCheckUser, healthCheckPassword) are required');
+    }
     this.logger = logger || new ConsoleLogger();
     this.reloadHostsFromConfig();
     this.selectInitialActive();
@@ -175,8 +178,8 @@ export class RadiusClient {
   }
 
   private async probeHost(host: string): Promise<boolean> {
-    const hcUser = this.config.healthCheckUser || 'grafana_dummy_user';
-    const hcPass = this.config.healthCheckPassword || 'dummy_password';
+    const hcUser = this.config.healthCheckUser!;
+    const hcPass = this.config.healthCheckPassword!;
     const timeoutMs = this.config.healthCheckTimeoutMs || 5000;
 
     const entry = this.health.get(host)!;
