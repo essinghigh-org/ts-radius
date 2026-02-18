@@ -46,8 +46,8 @@ export interface RadiusConfig extends RadiusProtocolOptions {
   healthCheckIntervalMs?: number;
   /** Health check timeout in milliseconds (default: 5000) */
   healthCheckTimeoutMs?: number;
-  /** User for health check probe (default: grafana_dummy_user) */
-  healthCheckUser?: string;
-  /** Password for health check probe (default: dummy_password) */
-  healthCheckPassword?: string;
+  /** User for health check probe (Required) */
+  healthCheckUser: string;
+  /** Password for health check probe (Required) */
+  healthCheckPassword: string;
 }

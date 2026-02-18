@@ -98,7 +98,7 @@ export async function radiusAuthenticate(
           lenBuf,
           authenticator, // request authenticator we sent earlier
           msg.slice(20), // attributes from response
-          Buffer.from(secret || "", "utf8"),
+          Buffer.from(secret, "utf8"),
         ]);
         const expected = crypto.createHash("md5").update(toHash).digest();
         if (!expected.equals(respAuth)) {

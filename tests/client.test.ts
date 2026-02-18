@@ -95,7 +95,8 @@ describe('RadiusClient Failover', () => {
     expect(res.error).toBe('timeout');
 
     // Wait a bit for async failover to happen (it's triggered but not awaited in authenticate)
-    await new Promise(r => setTimeout(r, 50));
+    // Using healthCheckTimeoutMs from config + buffer
+    await new Promise(r => setTimeout(r, config.healthCheckTimeoutMs! + 50));
 
     // Should have switched to 10.0.0.2
     expect(client.getActiveHost()).toBe('10.0.0.2');

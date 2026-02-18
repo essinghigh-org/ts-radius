@@ -80,9 +80,19 @@ export class RadiusClient {
       : [this.config.host];
 
     this.hosts = list.filter(Boolean);
+    const newHosts = new Set(this.hosts);
+
+    // Add new hosts
     for (const h of this.hosts) {
       if (!this.health.has(h)) {
         this.health.set(h, { host: h, lastOkAt: null, lastTriedAt: null, consecutiveFailures: 0 });
+      }
+    }
+
+    // Clean up removed hosts
+    for (const h of this.health.keys()) {
+      if (!newHosts.has(h)) {
+        this.health.delete(h);
       }
     }
   }
@@ -97,7 +107,11 @@ export class RadiusClient {
   public getActiveHost(): string {
     if (this.activeHost) return this.activeHost;
     // Fallback: first host while we have not yet validated any
-    return this.hosts[0] || this.config.host;
+    const fallback = this.hosts[0] || this.config.host;
+    if (!fallback) {
+      throw new Error('[radius-client] No active or fallback host available');
+    }
+    return fallback;
   }
 
   private async fastFailoverSequence(): Promise<string | null> {
@@ -130,7 +144,7 @@ export class RadiusClient {
     if (this.intervalHandle) clearInterval(this.intervalHandle);
     this.intervalHandle = setInterval(() => {
       this.backgroundHealthCycle().catch(e => this.logger.warn('[radius-client] background health cycle error', e));
-    }, Math.max(5000, intervalMs));
+    }, intervalMs);
   }
 
   private async backgroundHealthCycle() {
