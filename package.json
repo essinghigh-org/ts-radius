@@ -1,0 +1,16 @@
+{
+  "name": "ts-radius-client",
+  "version": "0.1.0",
+  "description": "A standards-compliant RADIUS client for TypeScript/Bun",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
