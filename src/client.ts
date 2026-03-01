@@ -62,7 +62,7 @@ export class RadiusClient {
       if (!result.ok && result.error === 'timeout') {
         this.logger.warn('[radius-client] auth timeout detected', { host });
         // Trigger failover check asynchronously
-        this.onAuthTimeout().catch(e => this.logger.warn('[radius-client] onAuthTimeout error', e));
+        this.onAuthTimeout().catch((error: unknown) => { this.logger.warn('[radius-client] onAuthTimeout error', error); });
       }
 
       return result;
@@ -100,7 +100,7 @@ export class RadiusClient {
   private selectInitialActive() {
     if (!this.activeHost && this.hosts.length) {
       // Try hosts in priority order until one responds (fast probe sequence)
-      this.fastFailoverSequence().catch(e => this.logger.warn('[radius-client] initial sequence error', e));
+      this.fastFailoverSequence().catch((error: unknown) => { this.logger.warn('[radius-client] initial sequence error', error); });
     }
   }
 
@@ -143,7 +143,7 @@ export class RadiusClient {
     const intervalMs = this.config.healthCheckIntervalMs || 1800000; // 30m default
     if (this.intervalHandle) clearInterval(this.intervalHandle);
     this.intervalHandle = setInterval(() => {
-      this.backgroundHealthCycle().catch(e => this.logger.warn('[radius-client] background health cycle error', e));
+      this.backgroundHealthCycle().catch((error: unknown) => { this.logger.warn('[radius-client] background health cycle error', error); });
     }, intervalMs);
   }
 
@@ -192,11 +192,22 @@ export class RadiusClient {
   }
 
   private async probeHost(host: string): Promise<boolean> {
-    const hcUser = this.config.healthCheckUser!;
-    const hcPass = this.config.healthCheckPassword!;
+    const hcUser = this.config.healthCheckUser;
+    const hcPass = this.config.healthCheckPassword;
     const timeoutMs = this.config.healthCheckTimeoutMs || 5000;
 
-    const entry = this.health.get(host)!;
+    const existingEntry = this.health.get(host);
+    const entry = existingEntry ?? {
+      host,
+      lastOkAt: null,
+      lastTriedAt: null,
+      consecutiveFailures: 0,
+    };
+
+    if (!existingEntry) {
+      this.health.set(host, entry);
+    }
+
     entry.lastTriedAt = Date.now();
     try {
       this.logger.debug('[radius-client] probing host', { host });

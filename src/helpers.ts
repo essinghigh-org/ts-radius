@@ -1,5 +1,7 @@
-import { RADIUS_ATTRIBUTES, type AttributeDefinition } from "./dictionary";
-import type { ParsedRadiusAttribute, ParsedAttribute, VendorSpecificAttribute } from "./types";
+import { RADIUS_ATTRIBUTES } from "./dictionary";
+import type { ParsedRadiusAttribute, VendorSpecificAttribute } from "./types";
+
+type DecodedAttributeValue = string | number | bigint | Date;
 
 export function decodeString(buffer: Buffer): string {
   return buffer.toString("utf8");
@@ -23,7 +25,13 @@ export function decodeDate(buffer: Buffer): Date {
 
 export function decodeIpAddr(buffer: Buffer): string {
   if (buffer.length !== 4) return "0.0.0.0";
-  return `${buffer[0]}.${buffer[1]}.${buffer[2]}.${buffer[3]}`;
+
+  return [
+    buffer.readUInt8(0),
+    buffer.readUInt8(1),
+    buffer.readUInt8(2),
+    buffer.readUInt8(3),
+  ].join(".");
 }
 
 export function decodeIpv6Addr(buffer: Buffer): string {
@@ -38,8 +46,8 @@ export function decodeIpv6Addr(buffer: Buffer): string {
 export function decodeIpv6Prefix(buffer: Buffer): string {
   if (buffer.length < 2) return "";
   // buffer[0] is reserved
-  const prefixLength = buffer[1];
-  const prefixBuffer = buffer.slice(2);
+  const prefixLength = buffer.readUInt8(1);
+  const prefixBuffer = buffer.subarray(2);
 
   const fullAddress = Buffer.alloc(16, 0);
   prefixBuffer.copy(fullAddress);
@@ -48,14 +56,14 @@ export function decodeIpv6Prefix(buffer: Buffer): string {
   for (let i = 0; i < 16; i += 2) {
     parts.push(fullAddress.readUInt16BE(i).toString(16));
   }
-  return `${parts.join(":")}/${prefixLength}`;
+  return `${parts.join(":")}/${String(prefixLength)}`;
 }
 
 export function decodeIfId(buffer: Buffer): string {
   if (buffer.length !== 8) return buffer.toString("hex");
   const parts: string[] = [];
   for (let i = 0; i < 8; i++) {
-    parts.push(buffer[i].toString(16).padStart(2, "0"));
+    parts.push(buffer.readUInt8(i).toString(16).padStart(2, "0"));
   }
   return parts.join(":");
 }
@@ -72,7 +80,7 @@ export function decodeVendorSpecific(value: Buffer): VendorSpecificAttribute {
   }
 
   const vendorId = value.readUInt32BE(0);
-  const data = value.slice(4);
+  const data = value.subarray(4);
 
   // Attempt to parse sub-attributes
   const subAttributes: { vendorType: number; value: string }[] = [];
@@ -85,15 +93,15 @@ export function decodeVendorSpecific(value: Buffer): VendorSpecificAttribute {
         parsable = false;
         break;
     }
-    const t = data[offset];
-    const l = data[offset + 1];
+    const t = data.readUInt8(offset);
+    const l = data.readUInt8(offset + 1);
 
     if (l < 2 || offset + l > data.length) {
         parsable = false;
         break;
     }
 
-    const val = data.slice(offset + 2, offset + l);
+    const val = data.subarray(offset + 2, offset + l);
     subAttributes.push({
         vendorType: t,
         value: val.toString("hex")
@@ -120,13 +128,13 @@ export function decodeAttribute(id: number, value: Buffer): ParsedRadiusAttribut
   if (!def) {
     return {
       id,
-      name: `Unknown-Attribute-${id}`,
+      name: `Unknown-Attribute-${String(id)}`,
       value: value.toString("hex"),
       raw: value.toString("hex")
     };
   }
 
-  let decodedValue: any;
+  let decodedValue: DecodedAttributeValue;
 
   try {
     switch (def.type) {
@@ -157,7 +165,7 @@ export function decodeAttribute(id: number, value: Buffer): ParsedRadiusAttribut
       default:
         decodedValue = value.toString("hex");
     }
-  } catch (e) {
+  } catch {
     decodedValue = value.toString("hex");
   }
 

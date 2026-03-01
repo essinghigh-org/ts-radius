@@ -1,21 +1,21 @@
 export interface Logger {
-  debug(message: string, ...args: any[]): void;
-  info(message: string, ...args: any[]): void;
-  warn(message: string, ...args: any[]): void;
-  error(message: string, ...args: any[]): void;
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
 }
 
 export class ConsoleLogger implements Logger {
-  debug(message: string, ...args: any[]): void {
+  debug(message: string, ...args: unknown[]): void {
     console.log(`[debug] ${message}`, ...args);
   }
-  info(message: string, ...args: any[]): void {
+  info(message: string, ...args: unknown[]): void {
     console.info(`[info] ${message}`, ...args);
   }
-  warn(message: string, ...args: any[]): void {
+  warn(message: string, ...args: unknown[]): void {
     console.warn(`[warn] ${message}`, ...args);
   }
-  error(message: string, ...args: any[]): void {
+  error(message: string, ...args: unknown[]): void {
     console.error(`[error] ${message}`, ...args);
   }
 }
@@ -23,7 +23,7 @@ export class ConsoleLogger implements Logger {
 export interface ParsedAttribute {
   id: number;
   name: string;
-  value: any;
+  value: unknown;
   raw: string; // Hex string of value for reference
 }
 
@@ -31,7 +31,7 @@ export interface VendorSpecificAttribute {
   id: 26;
   name: "Vendor-Specific";
   vendorId: number;
-  value: any; // If parsed, structure; else hex string
+  value: unknown; // If parsed, structure; else hex string
   raw: string;
 }
 

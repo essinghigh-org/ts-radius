@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { decodeAttribute, decodeVendorSpecific } from '../src/helpers';
+import { decodeAttribute } from '../src/helpers';
 
 describe('Attribute Decoding', () => {
   test('decodes User-Name (string)', () => {
@@ -96,11 +96,14 @@ describe('Attribute Decoding', () => {
 
     expect(result.id).toBe(26);
     expect(result.name).toBe('Vendor-Specific');
-    // @ts-ignore
+
+    if (!('vendorId' in result)) {
+      throw new Error('Expected Vendor-Specific attribute result');
+    }
+
     expect(result.vendorId).toBe(9);
-    // @ts-ignore
     expect(result.value).toEqual([
-        { vendorType: 1, value: '4142' }
+      { vendorType: 1, value: '4142' }
     ]);
   });
 
@@ -108,7 +111,11 @@ describe('Attribute Decoding', () => {
      const value = Buffer.from([0, 0, 0, 9, 1]); // Too short for sub-header
      const result = decodeAttribute(26, value);
      expect(result.name).toBe('Vendor-Specific');
-     // @ts-ignore
+
+     if (!('vendorId' in result)) {
+      throw new Error('Expected Vendor-Specific attribute result');
+    }
+
      expect(result.vendorId).toBe(9);
      expect(typeof result.value).toBe('string');
   });

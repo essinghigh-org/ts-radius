@@ -8,8 +8,8 @@ let responsiveHosts: Set<string> = new Set();
 let rejectingHosts: Set<string> = new Set();
 
 // Mock the protocol layer
-mock.module('../src/protocol', () => ({
-  radiusAuthenticate: async (host: string, username: string, password: string, options: any, logger: any): Promise<RadiusResult> => {
+void mock.module('../src/protocol', () => ({
+  radiusAuthenticate: async (host: string): Promise<RadiusResult> => {
     if (rejectingHosts.has(host)) {
       // Simulate Access-Reject (server alive but auth failed)
       return { ok: false, error: 'access_reject' };
@@ -34,6 +34,7 @@ describe('RadiusClient Failover', () => {
     healthCheckUser: 'test_health_user',
     healthCheckPassword: 'test_health_password'
   };
+  const healthTimeoutMs = config.healthCheckTimeoutMs ?? 100;
 
   beforeEach(() => {
     responsiveHosts = new Set(['10.0.0.1']);
@@ -103,7 +104,7 @@ describe('RadiusClient Failover', () => {
 
     // Wait a bit for async failover to happen (it's triggered but not awaited in authenticate)
     // Using healthCheckTimeoutMs from config + buffer
-    await new Promise(r => setTimeout(r, config.healthCheckTimeoutMs! + 50));
+    await new Promise(r => setTimeout(r, healthTimeoutMs + 50));
 
     // Should have switched to 10.0.0.2
     expect(client.getActiveHost()).toBe('10.0.0.2');
@@ -125,7 +126,7 @@ describe('RadiusClient Failover', () => {
 
     // Should NOT trigger failover
     // Wait a bit to ensure async failover didn't happen
-    await new Promise(r => setTimeout(r, config.healthCheckTimeoutMs! + 50));
+    await new Promise(r => setTimeout(r, healthTimeoutMs + 50));
 
     expect(client.getActiveHost()).toBe('10.0.0.1');
   });

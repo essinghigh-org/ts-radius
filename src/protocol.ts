@@ -47,7 +47,7 @@ export async function radiusAuthenticate(
       for (let i = 0; i < 16; i++) {
         xored[b * 16 + i] = padded[b * 16 + i] ^ md5[i];
       }
-      prev = xored.slice(b * 16, b * 16 + 16);
+      prev = xored.subarray(b * 16, b * 16 + 16);
     }
     attrs.push(Buffer.concat([Buffer.from([2, xored.length + 2]), xored]));
 
@@ -80,16 +80,16 @@ export async function radiusAuthenticate(
       client.close();
 
       // Minimal sanity checks
-      if (!msg || msg.length < 20) {
+      if (msg.length < 20) {
         if (logger) logger.warn('[radius] received malformed response (too short)');
-        resolve({ ok: false, raw: msg ? msg.toString("hex") : undefined, error: 'malformed_response' });
+        resolve({ ok: false, raw: msg.toString("hex"), error: 'malformed_response' });
         return;
       }
 
       const code = msg.readUInt8(0);
       // Verify response authenticator per RFC2865 when secret is available to avoid spoofed replies.
       try {
-        const respAuth = msg.slice(4, 20);
+        const respAuth = msg.subarray(4, 20);
         // Recompute: MD5(Code + Identifier + Length + RequestAuthenticator + Attributes + SharedSecret)
         const lenBuf = Buffer.alloc(2);
         lenBuf.writeUInt16BE(msg.length, 0);
@@ -98,7 +98,7 @@ export async function radiusAuthenticate(
           Buffer.from([msg.readUInt8(1)]),
           lenBuf,
           authenticator, // request authenticator we sent earlier
-          msg.slice(20), // attributes from response
+          msg.subarray(20), // attributes from response
           Buffer.from(secret, "utf8"),
         ]);
         const expected = crypto.createHash("md5").update(toHash).digest();
@@ -136,7 +136,7 @@ export async function radiusAuthenticate(
             break;
           }
 
-          const value = msg.slice(offset + 2, offset + l);
+          const value = msg.subarray(offset + 2, offset + l);
 
           // NEW: Generic parsing
           try {
@@ -160,7 +160,7 @@ export async function radiusAuthenticate(
                 const vendorLength = value.readUInt8(5);
 
                 if (vendorId === options.vendorId && vendorType === options.vendorType) {
-                  const vendorValue = value.slice(6, 6 + vendorLength - 2).toString("utf8");
+                  const vendorValue = value.subarray(6, 6 + vendorLength - 2).toString("utf8");
 
                   if (options.valuePattern) {
                     // Extract value using regex pattern
@@ -208,13 +208,10 @@ export async function radiusAuthenticate(
           offset += l;
         }
 
-        const isOk = (code === 2);
-        let errorString: string | undefined = undefined;
-        if (!isOk) {
-            if (code === 3) errorString = 'access_reject';
-            else if (code === 11) errorString = 'access_challenge';
-            else errorString = 'unknown_code';
-        }
+        const isOk = code === 2;
+        const errorString = isOk
+          ? undefined
+          : (code === 3 ? 'access_reject' : 'access_challenge');
 
         resolve({
             ok: isOk,
@@ -230,7 +227,11 @@ export async function radiusAuthenticate(
 
     client.on("error", (err) => {
       clearTimeout(timer);
-      try { client.close(); } catch { }
+      try {
+        client.close();
+      } catch (closeError: unknown) {
+        if (logger) logger.debug('[radius] socket close after error failed', closeError);
+      }
       reject(err);
     });
 
