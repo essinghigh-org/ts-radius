@@ -354,6 +354,16 @@ function validateResponsePacket(
     return { error: "malformed_response" };
   }
 
+  if (maxPacketLength !== undefined && response.length > maxPacketLength) {
+    if (logger) {
+      logger.warn("[radius] received malformed response (datagram length exceeds maximum)", {
+        actualLength: response.length,
+        maxPacketLength,
+      });
+    }
+    return { error: "malformed_response" };
+  }
+
   const declaredLength = response.readUInt16BE(2);
   if (declaredLength < 20) {
     if (logger) {
