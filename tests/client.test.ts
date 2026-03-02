@@ -919,6 +919,45 @@ describe('RadiusClient Failover', () => {
     statusClient.shutdown();
   });
 
+  test('status-server auth fallback forwards CHAP health probe options when configured', async () => {
+    const chapChallenge = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const statusClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      healthCheckProbeMode: 'status-server',
+      authMethod: 'chap',
+      chapId: 77,
+      chapChallenge
+    }, undefined, { protocol: protocolMock });
+
+    statusResponsiveHosts = new Set();
+    statusUnsupportedHosts = new Set(['10.0.0.2']);
+    responsiveHosts = new Set(['10.0.0.2']);
+    rejectingHosts = new Set(['10.0.0.2']);
+    authCalls = [];
+    statusCalls = [];
+
+    const newHost = await statusClient.failover();
+
+    expect(newHost).toBe('10.0.0.2');
+    expect(statusCalls.some((call) => call.host === '10.0.0.2')).toBe(true);
+
+    const fallbackAuthProbe = authCalls.find(
+      (call) => call.host === '10.0.0.2' && call.username === config.healthCheckUser
+    );
+    expect(fallbackAuthProbe).toBeDefined();
+
+    if (!fallbackAuthProbe) {
+      throw new Error('Expected fallback auth probe to be issued for CHAP forwarding test');
+    }
+
+    expect(fallbackAuthProbe.options.authMethod).toBe('chap');
+    expect(fallbackAuthProbe.options.chapId).toBe(77);
+    expect(fallbackAuthProbe.options.chapChallenge?.equals(chapChallenge)).toBe(true);
+
+    statusClient.shutdown();
+  });
+
   test('sendCoa forwards request and expected protocol options', async () => {
     const result = await client.sendCoa({
       username: 'alice',

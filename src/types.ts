@@ -144,6 +144,7 @@ export type RadiusDisconnectResult = RadiusDynamicAuthorizationResult;
 
 export type ResponseLengthValidationPolicy = "strict" | "allow_trailing_bytes";
 export type ResponseMessageAuthenticatorPolicy = "compatibility" | "strict";
+export type RadiusAuthMethod = "pap" | "chap";
 
 export interface RadiusProtocolOptions {
   secret: string;
@@ -151,6 +152,12 @@ export interface RadiusProtocolOptions {
   accountingPort?: number;
   dynamicAuthorizationPort?: number;
   timeoutMs?: number;
+  /** Access-Request credential attribute mode (default: "pap"). */
+  authMethod?: RadiusAuthMethod;
+  /** Optional deterministic CHAP Identifier override (used when authMethod is "chap"). */
+  chapId?: number;
+  /** Optional deterministic CHAP challenge override (used when authMethod is "chap"). */
+  chapChallenge?: Buffer;
   assignmentAttributeId?: number;
   vendorId?: number;
   vendorType?: number;
