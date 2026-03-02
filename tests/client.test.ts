@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { RadiusClient } from '../src/client';
 import type {
   RadiusAccountingRequest,
@@ -56,8 +56,7 @@ let disconnectCalls: {
   logger: unknown;
 }[] = [];
 
-// Mock the protocol layer
-void mock.module('../src/protocol', () => ({
+const protocolMock = {
   radiusAuthenticate: async (
     host: string,
     username: string,
@@ -136,7 +135,7 @@ void mock.module('../src/protocol', () => ({
 
     return { ok: true, acknowledged: true };
   }
-}));
+};
 
 describe('RadiusClient Failover', () => {
   let client: RadiusClient;
@@ -195,7 +194,8 @@ describe('RadiusClient Failover', () => {
     accountingCalls = [];
     coaCalls = [];
     disconnectCalls = [];
-    client = new RadiusClient(config);
+
+    client = new RadiusClient(config, undefined, { protocol: protocolMock });
   });
 
   afterEach(() => {
@@ -329,7 +329,7 @@ describe('RadiusClient Failover', () => {
         maxDelayMs: 1000,
         jitterRatio: 0
       }
-    });
+    }, undefined, { protocol: protocolMock });
 
     responsiveHosts = new Set();
     authCalls = [];
@@ -360,7 +360,7 @@ describe('RadiusClient Failover', () => {
         maxDelayMs: 1,
         jitterRatio: 0
       }
-    });
+    }, undefined, { protocol: protocolMock });
 
     responsiveHosts = new Set();
     authCalls = [];
@@ -387,7 +387,7 @@ describe('RadiusClient Failover', () => {
         maxDelayMs: 1,
         jitterRatio: 0
       }
-    });
+    }, undefined, { protocol: protocolMock });
 
     responsiveHosts = new Set();
     authCalls = [];
@@ -421,7 +421,7 @@ describe('RadiusClient Failover', () => {
         maxDelayMs: Number.NaN,
         jitterRatio: Number.NaN
       }
-    });
+    }, undefined, { protocol: protocolMock });
 
     responsiveHosts = new Set();
     authCalls = [];
@@ -456,7 +456,7 @@ describe('RadiusClient Failover', () => {
           maxDelayMs: 1000,
           jitterRatio: 0.5
         }
-      });
+      }, undefined, { protocol: protocolMock });
 
       responsiveHosts = new Set();
       authCalls = [];
@@ -493,7 +493,7 @@ describe('RadiusClient Failover', () => {
         maxDelayMs: 1,
         jitterRatio: 0
       }
-    });
+    }, undefined, { protocol: protocolMock });
 
     // First host times out, second host responds.
     responsiveHosts = new Set(['10.0.0.2']);
@@ -517,7 +517,7 @@ describe('RadiusClient Failover', () => {
       ...config,
       healthCheckIntervalMs: 60000,
       healthCheckProbeMode: 'status-server'
-    });
+    }, undefined, { protocol: protocolMock });
 
     statusResponsiveHosts = new Set(['10.0.0.2']);
     responsiveHosts = new Set();
@@ -542,7 +542,7 @@ describe('RadiusClient Failover', () => {
       ...config,
       healthCheckIntervalMs: 60000,
       healthCheckProbeMode: 'status-server'
-    });
+    }, undefined, { protocol: protocolMock });
 
     statusResponsiveHosts = new Set();
     statusUnsupportedHosts = new Set(['10.0.0.2']);
