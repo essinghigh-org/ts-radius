@@ -10,6 +10,7 @@ import type {
   RadiusChallengeContinuationOptions,
   RadiusChallengeResult,
   RadiusAccountingRequest,
+  RadiusAccountingRequestIdentity,
   RadiusSessionAccountingStatusType,
   RadiusAccountingStatusType,
   RadiusCoaRequest,
@@ -88,6 +89,10 @@ interface DynamicAuthorizationCodes {
 
 function isUint32(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+
+function isUdpPort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 0xffff;
 }
 
 function isUint64(value: bigint): boolean {
@@ -488,6 +493,29 @@ function resolveAccountingSessionId(request: RadiusAccountingRequest): string {
   }
 
   return `acct-onoff-${String(Date.now())}-${crypto.randomUUID()}`;
+}
+
+function resolveAccountingRequestIdentity(options: RadiusProtocolOptions): RadiusAccountingRequestIdentity {
+  const identity = options.accountingRequestIdentity;
+  if (!identity) {
+    return {
+      identifier: crypto.randomBytes(1).readUInt8(0)
+    };
+  }
+
+  if (!Number.isInteger(identity.identifier) || identity.identifier < 0 || identity.identifier > 0xff) {
+    throw new Error(
+      "[radius] accounting request identity.identifier must be an integer between 0 and 255"
+    );
+  }
+
+  if (identity.sourcePort !== undefined && !isUdpPort(identity.sourcePort)) {
+    throw new Error(
+      "[radius] accounting request identity.sourcePort must be an integer between 1 and 65535"
+    );
+  }
+
+  return identity;
 }
 
 function hasAccountingNasIdentifier(request: RadiusAccountingRequest): boolean {
@@ -1559,6 +1587,10 @@ export async function radiusAccounting(
   const port = options.accountingPort ?? options.port ?? 1813;
   const timeoutMs = options.timeoutMs ?? 5000;
   const validateResponseSource = options.validateResponseSource !== false;
+  const requestIdentity = resolveAccountingRequestIdentity(options);
+  const responseValidationOptions: RadiusProtocolOptions = options.responseLengthValidationPolicy === undefined
+    ? { ...options, responseLengthValidationPolicy: "allow_trailing_bytes" }
+    : options;
   const expectedSourceHosts = validateResponseSource
     ? await resolveExpectedSourceHosts(targetHost)
     : null;
@@ -1581,7 +1613,7 @@ export async function radiusAccounting(
 
   return new Promise((resolve, reject) => {
     const client = createSocketForHost(targetHost);
-    const id = crypto.randomBytes(1).readUInt8(0);
+    const id = requestIdentity.identifier;
 
     const header = Buffer.alloc(20);
     header.writeUInt8(4, 0); // Accounting-Request
@@ -1605,7 +1637,7 @@ export async function radiusAccounting(
       clearTimeout(timer);
       client.close();
 
-      const packetValidation = validateResponsePacket(msg, options, logger);
+      const packetValidation = validateResponsePacket(msg, responseValidationOptions, logger);
       if ("error" in packetValidation) {
         resolve({ ok: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;
@@ -1677,13 +1709,35 @@ export async function radiusAccounting(
       reject(err);
     });
 
-    client.send(packet, port, targetHost, (err) => {
-      if (err) {
-        clearTimeout(timer);
-        client.close();
-        reject(err);
-      }
-    });
+    const sendPacket = (): void => {
+      client.send(packet, port, targetHost, (err) => {
+        if (err) {
+          clearTimeout(timer);
+          client.close();
+          reject(err);
+        }
+      });
+    };
+
+    if (requestIdentity.sourcePort !== undefined) {
+      client.bind(requestIdentity.sourcePort, () => {
+        sendPacket();
+      });
+      return;
+    }
+
+    if (options.accountingRequestIdentity) {
+      client.bind(0, () => {
+        const localAddress = client.address();
+        if (typeof localAddress !== "string") {
+          requestIdentity.sourcePort = localAddress.port;
+        }
+        sendPacket();
+      });
+      return;
+    }
+
+    sendPacket();
   });
 }
 

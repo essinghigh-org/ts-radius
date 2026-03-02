@@ -514,6 +514,58 @@ describe("Accounting protocol", () => {
     }
   });
 
+  test("reuses provided accounting request identity and keeps packet/authenticator deterministic across repeated sends", async () => {
+    const server = await bindServer();
+    const receivedPackets: Buffer[] = [];
+    const sourcePorts: number[] = [];
+    const requestIdentity: { identifier: number; sourcePort?: number } = { identifier: 77 };
+
+    server.on("message", (msg, rinfo) => {
+      receivedPackets.push(Buffer.from(msg));
+      sourcePorts.push(rinfo.port);
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 5);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const request: RadiusAccountingRequest = {
+        username: "alice",
+        sessionId: "session-retry-identity",
+        statusType: "Interim-Update"
+      };
+
+      const options = {
+        secret: sharedSecret,
+        port: getServerPort(server),
+        timeoutMs: 500,
+        accountingRequestIdentity: requestIdentity
+      };
+
+      const firstResult = await radiusAccounting("127.0.0.1", request, options);
+      const secondResult = await radiusAccounting("127.0.0.1", request, options);
+
+      expect(firstResult.ok).toBe(true);
+      expect(secondResult.ok).toBe(true);
+      expect(receivedPackets).toHaveLength(2);
+
+      const firstPacket = receivedPackets[0];
+      const secondPacket = receivedPackets[1];
+      if (!firstPacket || !secondPacket) {
+        throw new Error("Expected captured request packets for repeated identity validation");
+      }
+
+      expect(firstPacket.readUInt8(1)).toBe(requestIdentity.identifier);
+      expect(secondPacket.readUInt8(1)).toBe(requestIdentity.identifier);
+      expect(secondPacket.equals(firstPacket)).toBe(true);
+
+      expect(sourcePorts).toHaveLength(2);
+      expect(sourcePorts[1]).toBe(sourcePorts[0]);
+      expect(requestIdentity.sourcePort).toBe(sourcePorts[0]);
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("rejects responses from unexpected source port by default", async () => {
     const server = await bindServer();
     const alternate = await bindServer();
@@ -714,7 +766,37 @@ describe("Accounting protocol", () => {
     }
   });
 
-  test("rejects Accounting-Response trailing bytes by default strict length policy", async () => {
+  test("accepts Accounting-Response trailing bytes by default for RFC padding compatibility", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildAccountingResponsePacket(msg, sharedSecret, 5));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-default-compat-length",
+          statusType: "Start"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.error).toBeUndefined();
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects Accounting-Response trailing bytes when strict length policy is explicitly requested", async () => {
     const server = await bindServer();
 
     server.on("message", (msg, rinfo) => {
@@ -733,7 +815,8 @@ describe("Accounting protocol", () => {
         {
           secret: sharedSecret,
           port: getServerPort(server),
-          timeoutMs: 500
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "strict"
         }
       );
 

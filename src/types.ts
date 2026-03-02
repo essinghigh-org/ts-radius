@@ -109,6 +109,17 @@ export interface RadiusDynamicAuthorizationRequestIdentity {
   requestAuthenticator: Buffer;
 }
 
+export interface RadiusAccountingRequestIdentity {
+  /** RFC2866 packet Identifier (1 octet). */
+  identifier: number;
+  /**
+   * Optional fixed UDP source port for Accounting-Request sends.
+   * When omitted and an identity object is reused by caller code,
+   * implementations may resolve and persist an ephemeral source port.
+   */
+  sourcePort?: number;
+}
+
 export type RadiusErrorCauseSymbol =
   | "residual_session_context_removed"
   | "invalid_eap_packet"
@@ -165,6 +176,12 @@ export interface RadiusProtocolOptions {
   /** Validate response source host/port against request target host/port (default: true). */
   validateResponseSource?: boolean;
   /**
+   * Optional request identity override for Accounting-Request packets.
+   * When provided, the Identifier is reused verbatim; sourcePort (if set)
+   * binds the local UDP source port.
+   */
+  accountingRequestIdentity?: RadiusAccountingRequestIdentity;
+  /**
    * Optional request identity override for CoA/Disconnect packets.
    * When provided, both identifier and request authenticator are used verbatim.
    */
@@ -177,8 +194,10 @@ export interface RadiusProtocolOptions {
   responseMessageAuthenticatorPolicy?: ResponseMessageAuthenticatorPolicy;
   /**
    * How response length mismatches are handled.
-   * - strict (default): declared packet length must equal UDP datagram length.
-   * - allow_trailing_bytes: accept datagrams with extra trailing bytes and parse only declared length.
+   * - strict (default for access-auth/status/dynamic-authorization):
+   *   declared packet length must equal UDP datagram length.
+   * - allow_trailing_bytes (default for accounting responses):
+   *   accept datagrams with extra trailing bytes and parse only declared length.
    */
   responseLengthValidationPolicy?: ResponseLengthValidationPolicy;
 }

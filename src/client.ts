@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from "./protocol";
 import {
   type RadiusAccountingOnOffRequest,
+  type RadiusAccountingRequestIdentity,
   type RadiusAccountingRequest,
   type RadiusAccountingRequestBase,
   type RadiusCoaRequest,
@@ -196,6 +197,26 @@ export class RadiusClient {
     };
   }
 
+  private createAccountingRequestIdentity(): RadiusAccountingRequestIdentity {
+    return {
+      identifier: randomBytes(1).readUInt8(0),
+    };
+  }
+
+  private normalizeAccountingRequestForRetries(request: RadiusAccountingRequest): RadiusAccountingRequest {
+    if (
+      (request.statusType === "Accounting-On" || request.statusType === "Accounting-Off")
+      && request.sessionId === undefined
+    ) {
+      return {
+        ...request,
+        sessionId: `acct-onoff-${String(Date.now())}-${randomUUID()}`,
+      };
+    }
+
+    return request;
+  }
+
   private getFiniteRetryNumber(value: number | undefined, fallback: number): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       return fallback;
@@ -270,16 +291,22 @@ export class RadiusClient {
     const maxAttempts = Number.isFinite(retryPolicy.maxAttempts)
       ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
       : 1;
+    const requestForSend = this.normalizeAccountingRequestForRetries(request);
+    const retryIdentityByHost = new Map<string, RadiusAccountingRequestIdentity>();
 
     let lastResult: RadiusResult = { ok: false, error: 'timeout' };
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const host = this.getActiveHost();
+      const requestIdentity = retryIdentityByHost.get(host) ?? this.createAccountingRequestIdentity();
+      if (!retryIdentityByHost.has(host)) {
+        retryIdentityByHost.set(host, requestIdentity);
+      }
 
       this.logger.debug("[radius-client] accounting start", {
         host,
-        statusType: request.statusType,
-        sessionId: request.sessionId,
+        statusType: requestForSend.statusType,
+        sessionId: requestForSend.sessionId,
         attempt,
         maxAttempts
       });
@@ -293,21 +320,22 @@ export class RadiusClient {
           validateResponseSource: this.config.validateResponseSource,
           responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
           responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
+          accountingRequestIdentity: requestIdentity,
         };
 
-        const result = await this.protocol.radiusAccounting(host, request, protocolOptions, this.logger);
+        const result = await this.protocol.radiusAccounting(host, requestForSend, protocolOptions, this.logger);
         lastResult = result;
 
         if (result.ok || !this.isRetryableAccountingFailure(result) || attempt >= maxAttempts) {
           if (!result.ok && result.error === "timeout") {
             this.logger.warn("[radius-client] accounting timeout detected", {
               host,
-              statusType: request.statusType,
-              sessionId: request.sessionId,
+              statusType: requestForSend.statusType,
+              sessionId: requestForSend.sessionId,
               attempt,
               maxAttempts
             });
-            this.onAccountingTimeout(request).catch((error: unknown) => {
+            this.onAccountingTimeout(requestForSend).catch((error: unknown) => {
               this.logger.warn("[radius-client] onAccountingTimeout error", error);
             });
           }
@@ -317,8 +345,8 @@ export class RadiusClient {
 
         this.logger.warn('[radius-client] accounting transport failure; trying in-call failover before retry', {
           host,
-          statusType: request.statusType,
-          sessionId: request.sessionId,
+          statusType: requestForSend.statusType,
+          sessionId: requestForSend.sessionId,
           attempt,
           maxAttempts,
           error: result.error
@@ -672,11 +700,12 @@ export class RadiusClient {
           sessionId: this.createHealthProbeSessionId(),
           statusType: "Interim-Update"
         };
-        const accountingOptions = {
+        const accountingOptions: RadiusProtocolOptions = {
           secret: this.config.secret,
           port: accountingPort,
           accountingPort,
-          timeoutMs
+          timeoutMs,
+          responseLengthValidationPolicy: "strict"
         };
 
         const accountingRes = await this.protocol.radiusAccounting(
