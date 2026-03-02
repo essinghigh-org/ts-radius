@@ -219,7 +219,8 @@ export interface RadiusProtocolOptions {
    * - strict (default for access-auth/status-server):
    *   declared packet length must equal UDP datagram length.
    * - allow_trailing_bytes (default for accounting and dynamic-authorization responses):
-   *   accept datagrams with extra trailing bytes and parse only declared length.
+   *   accept datagrams with extra trailing bytes and parse only declared length,
+   *   while still enforcing operation-specific maximum UDP datagram length limits.
    */
   responseLengthValidationPolicy?: ResponseLengthValidationPolicy;
 }
@@ -313,11 +314,11 @@ export interface RadiusConfig extends RadiusProtocolOptions {
   retry?: RadiusRetryOptions;
   /**
    * Controls CoA/Disconnect retry identity behavior.
-   * - per_attempt (default): each retry attempt uses a new packet identifier,
-   *   producing a new computed accounting-style Request Authenticator.
-   * - stable: retries to the same host reuse one identifier;
+   * - stable (default): retries to the same host reuse one identifier;
    *   failover to a different host uses a new identity (identifier/sourcePort).
    *   Request Authenticator is still computed by the protocol layer per packet.
+   * - per_attempt: each retry attempt uses a new packet identifier,
+   *   producing a new computed accounting-style Request Authenticator.
    */
   dynamicAuthorizationRetryIdentityMode?: DynamicAuthorizationRetryIdentityMode;
 }

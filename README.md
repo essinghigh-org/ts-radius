@@ -119,7 +119,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `retry.backoffMultiplier` | `number` | `2` | Exponential multiplier for retry delays. |
 | `retry.maxDelayMs` | `number` | `5000` | Maximum delay cap for retries (milliseconds). |
 | `retry.jitterRatio` | `number` | `0` | Symmetric jitter ratio in range `[0,1]` (e.g. `0.5` = ±50%). |
-| `dynamicAuthorizationRetryIdentityMode` | `'per_attempt' \| 'stable'` | `'per_attempt'` | CoA/Disconnect retry identity mode. `stable` reuses one RFC5176 Identifier per host within a call (same-host retries keep it; failover host gets a new one). Request Authenticator is still computed by protocol per packet (accounting-style). |
+| `dynamicAuthorizationRetryIdentityMode` | `'per_attempt' \| 'stable'` | `'stable'` | CoA/Disconnect retry identity mode. `stable` (default) reuses one RFC5176 Identifier per host within a call (same-host retries keep it; failover host gets a new one). Set `'per_attempt'` to force a fresh identifier on every retry attempt. Request Authenticator is still computed by protocol per packet (accounting-style). |
 | `dynamicAuthorizationEventTimestampWindowSeconds` | `number` | `300` | Max allowed absolute skew (seconds) for dynamic-authorization response Event-Timestamp (Type 55) when present. |
 | `assignmentAttributeId` | `number` | `25` | Attribute ID to extract (e.g., 25 for Class). |
 | `vendorId` | `number` | `undefined` | Vendor-Id for VSA extraction when `assignmentAttributeId` is `26`. |
@@ -127,7 +127,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `valuePattern` | `string` | `undefined` | Optional regex used to extract a subgroup from the assignment attribute value. |
 | `validateResponseSource` | `boolean` | `true` | Validates response source host/port against request target host/port. |
 | `responseMessageAuthenticatorPolicy` | `'compatibility' \| 'strict'` | `'compatibility'` | Access-response Message-Authenticator handling (`strict` rejects invalid/missing values). Dynamic-authorization responses independently reject invalid *present* Message-Authenticator values. |
-| `responseLengthValidationPolicy` | `'strict' \| 'allow_trailing_bytes'` | operation-specific (`'allow_trailing_bytes'` for accounting and dynamic-authorization, `'strict'` for access-auth/status-server) | Low-level response length policy; `allow_trailing_bytes` trims extra datagram bytes beyond declared RADIUS length. |
+| `responseLengthValidationPolicy` | `'strict' \| 'allow_trailing_bytes'` | operation-specific (`'allow_trailing_bytes'` for accounting and dynamic-authorization, `'strict'` for access-auth/status-server) | Low-level response length policy; `allow_trailing_bytes` trims extra datagram bytes beyond declared RADIUS length. Operation-specific maximum UDP datagram length limits are always enforced. |
 
 ## Advanced options parity matrix
 
@@ -147,7 +147,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | CHAP authentication | `authenticate` + auth health probes (including status-server fallback auth probes) | `authMethod: "chap"` enables CHAP credentials. `chapId` and `chapChallenge` can be set for deterministic behavior. |
 | Accounting On/Off operations | `accountingOn`, `accountingOff` (both call `sendAccounting`) | Encodes `Acct-Status-Type` as `Accounting-On` / `Accounting-Off`. `username` is optional; if `sessionId` is omitted, an `Acct-Session-Id` value is auto-generated per request. |
 | Accounting retry identity semantics | `sendAccounting` | Retries to the same destination reuse one Accounting Identifier per logical send. Source port is bound per logical send identity to keep retransmissions source-port stable when retries occur. |
-| Dynamic authorization retry identity | `sendCoa`, `sendDisconnect`, `dynamicAuthorizationRetryIdentityMode` | `per_attempt` (default) uses a fresh identifier per attempt; `stable` reuses one identifier for retries to the same host and rotates identifier on failover-host retry. Request Authenticator remains protocol-computed per packet. |
+| Dynamic authorization retry identity | `sendCoa`, `sendDisconnect`, `dynamicAuthorizationRetryIdentityMode` | `stable` (default) reuses one identifier for retries to the same host and rotates identifier on failover-host retry; `per_attempt` uses a fresh identifier per attempt. Request Authenticator remains protocol-computed per packet. |
 | 64-bit accounting counters | `sendAccounting` and accounting helpers | `inputOctets64` / `outputOctets64` are split into low/high words (`42/52`, `43/53`) and take precedence over 32-bit fields when both are provided. |
 
 ### Validation policy notes
@@ -165,6 +165,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
   - accounting default: `allow_trailing_bytes` (RFC padding-compatible; trailing bytes ignored).
   - dynamic authorization default: `allow_trailing_bytes` (trailing bytes treated as padding by default).
   - access-auth/status-server default: `strict`.
+  - operation-specific maximum packet lengths are enforced against actual UDP datagram size, regardless of this policy.
   - explicit `strict`: declared RADIUS length must equal UDP datagram length.
   - explicit `allow_trailing_bytes`: accepts trailing bytes and parses only the declared packet length.
 

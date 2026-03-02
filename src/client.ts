@@ -185,9 +185,9 @@ export class RadiusClient {
   }
 
   private getDynamicAuthorizationRetryIdentityMode(): DynamicAuthorizationRetryIdentityMode {
-    return this.config.dynamicAuthorizationRetryIdentityMode === "stable"
-      ? "stable"
-      : "per_attempt";
+    return this.config.dynamicAuthorizationRetryIdentityMode === "per_attempt"
+      ? "per_attempt"
+      : "stable";
   }
 
   private createDynamicAuthorizationRequestIdentifier(): number {

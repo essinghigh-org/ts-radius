@@ -951,6 +951,40 @@ describe("Accounting protocol", () => {
     }
   });
 
+  test("rejects oversized Accounting-Response datagrams with small declared length in allow_trailing_bytes mode", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = Buffer.concat([
+        buildAccountingResponsePacket(msg, sharedSecret, 5),
+        Buffer.alloc(5000, 0xaa)
+      ]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-oversized-datagram-small-declared-length",
+          statusType: "Stop"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "allow_trailing_bytes"
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("returns timeout when accounting server does not respond", async () => {
     const server = await bindServer();
 

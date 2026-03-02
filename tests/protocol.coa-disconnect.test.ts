@@ -1097,6 +1097,74 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
+  test("rejects oversized CoA datagrams with small declared length in allow_trailing_bytes mode", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = Buffer.concat([
+        buildDynamicAuthorizationResponse(msg, sharedSecret, 44),
+        Buffer.alloc(5000, 0xaa)
+      ]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-coa-oversized-datagram-small-declared-length"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "allow_trailing_bytes"
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects oversized Disconnect datagrams with small declared length in allow_trailing_bytes mode", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = Buffer.concat([
+        buildDynamicAuthorizationResponse(msg, sharedSecret, 41),
+        Buffer.alloc(5000, 0xaa)
+      ]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusDisconnect(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-disconnect-oversized-datagram-small-declared-length"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "allow_trailing_bytes"
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("rejects inbound CoA responses above RFC5176 4096-byte maximum", async () => {
     const server = await bindServer();
 

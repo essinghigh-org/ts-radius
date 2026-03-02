@@ -1414,7 +1414,7 @@ describe('RadiusClient Failover', () => {
     });
   }
 
-  test('sendCoa retries keep default per-attempt identity behavior when no identity mode is configured', async () => {
+  test('sendCoa retries default to stable identity behavior when no identity mode is configured', async () => {
     const retryClient = new RadiusClient({
       ...config,
       hosts: ['10.0.0.1', '10.0.0.2'],
@@ -1427,6 +1427,18 @@ describe('RadiusClient Failover', () => {
         jitterRatio: 0
       }
     }, undefined, { protocol: protocolMock });
+
+    const retryClientInternals = retryClient as unknown as {
+      createDynamicAuthorizationRequestIdentifier: () => number;
+    };
+    const deterministicIdentifiers = [0x11, 0x22];
+    retryClientInternals.createDynamicAuthorizationRequestIdentifier = (): number => {
+      const nextIdentifier = deterministicIdentifiers.shift();
+      if (nextIdentifier === undefined) {
+        throw new Error('Expected deterministic CoA identifier sequence to contain two values');
+      }
+      return nextIdentifier;
+    };
 
     responsiveCoaHosts = new Set(['10.0.0.2']);
     coaCalls = [];
@@ -1443,6 +1455,57 @@ describe('RadiusClient Failover', () => {
     });
 
     const userCalls = coaCalls.filter((call) => call.request.sessionId === 'coa-default-identity-mode');
+    const identities = userCalls
+      .map((call) => call.options.dynamicAuthorizationRequestIdentity)
+      .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined);
+
+    expect(result.ok).toBe(true);
+    expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(identities).toHaveLength(2);
+
+    const firstIdentity = identities[0];
+    const secondIdentity = identities[1];
+    if (!firstIdentity || !secondIdentity) {
+      throw new Error('Expected CoA retry identities to be defined for both hosts');
+    }
+
+    expect(firstIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.identifier).not.toBe(firstIdentity.identifier);
+
+    retryClient.shutdown();
+  });
+
+  test('sendCoa retries keep per-attempt identity behavior when explicitly configured', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      dynamicAuthorizationRetryIdentityMode: 'per_attempt',
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    responsiveCoaHosts = new Set(['10.0.0.2']);
+    coaCalls = [];
+    coaResponseBySessionId = new Map([
+      ['coa-explicit-per-attempt-identity-mode', [
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: true, acknowledged: true }
+      ]]
+    ]);
+
+    const result = await retryClient.sendCoa({
+      username: 'alice',
+      sessionId: 'coa-explicit-per-attempt-identity-mode'
+    });
+
+    const userCalls = coaCalls.filter((call) => call.request.sessionId === 'coa-explicit-per-attempt-identity-mode');
 
     expect(result.ok).toBe(true);
     expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.2']);
