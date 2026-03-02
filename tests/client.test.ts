@@ -1725,9 +1725,10 @@ describe('RadiusClient Failover', () => {
     expect(offCall?.request.statusType).toBe('Accounting-Off');
 
     expect(onCall?.request.username).toBeUndefined();
-    expect(onCall?.request.sessionId).toBeUndefined();
+    expect(onCall?.request.sessionId?.startsWith('acct-onoff-')).toBe(true);
     expect(offCall?.request.username).toBeUndefined();
-    expect(offCall?.request.sessionId).toBeUndefined();
+    expect(offCall?.request.sessionId?.startsWith('acct-onoff-')).toBe(true);
+    expect(onCall?.request.sessionId).not.toBe(offCall?.request.sessionId);
 
     expect(startCall?.options).toMatchObject({
       secret: 'secret',
@@ -1841,6 +1842,58 @@ describe('RadiusClient Failover', () => {
     expect(timeoutHookRequests).toHaveLength(0);
 
     retryClient.shutdown();
+  });
+
+  test('sendAccounting retries same-destination failures with a stable accounting request identifier', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 0,
+        backoffMultiplier: 1,
+        maxDelayMs: 0,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    try {
+      accountingCalls = [];
+      accountingResponseBySessionId = new Map([
+        ['accounting-stable-identifier', [
+          { ok: false, error: 'timeout' },
+          { ok: true }
+        ]]
+      ]);
+
+      const result = await retryClient.sendAccounting({
+        username: 'alice',
+        sessionId: 'accounting-stable-identifier',
+        statusType: 'Interim-Update'
+      });
+
+      const userCalls = accountingCalls.filter((call) => call.request.sessionId === 'accounting-stable-identifier');
+      const identities = userCalls
+        .map((call) => call.options.accountingRequestIdentity)
+        .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined);
+
+      expect(result.ok).toBe(true);
+      expect(userCalls).toHaveLength(2);
+      expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.1']);
+      expect(identities).toHaveLength(2);
+
+      const firstIdentity = identities[0];
+      if (!firstIdentity) {
+        throw new Error('Expected first accounting retry identity to be defined');
+      }
+
+      for (const identity of identities.slice(1)) {
+        expect(identity.identifier).toBe(firstIdentity.identifier);
+      }
+    } finally {
+      retryClient.shutdown();
+    }
   });
 
   for (const retryableError of ['malformed_response', 'identifier_mismatch', 'authenticator_mismatch', 'unknown_code'] as const) {

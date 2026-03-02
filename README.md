@@ -126,14 +126,14 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `valuePattern` | `string` | `undefined` | Optional regex used to extract a subgroup from the assignment attribute value. |
 | `validateResponseSource` | `boolean` | `true` | Validates response source host/port against request target host/port. |
 | `responseMessageAuthenticatorPolicy` | `'compatibility' \| 'strict'` | `'compatibility'` | Access-response Message-Authenticator handling (`strict` rejects invalid/missing values). |
-| `responseLengthValidationPolicy` | `'strict' \| 'allow_trailing_bytes'` | `'strict'` | Low-level response length policy; `allow_trailing_bytes` trims extra datagram bytes beyond declared RADIUS length. |
+| `responseLengthValidationPolicy` | `'strict' \| 'allow_trailing_bytes'` | operation-specific (`'allow_trailing_bytes'` for accounting, `'strict'` otherwise) | Low-level response length policy; `allow_trailing_bytes` trims extra datagram bytes beyond declared RADIUS length. |
 
 ## Advanced options parity matrix
 
 | Operation / path | Retry behavior (`retry.*`) | Advanced options forwarded / applied | Notes |
 |---|---|---|---|
 | `authenticate` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `authMethod`, `chapId`, `chapChallenge`, `assignmentAttributeId`, `vendorId`, `vendorType`, `valuePattern` | `access_reject` and `access_challenge` are terminal for the call (no retry). Timeout still triggers async health verification/failover logic. |
-| `sendAccounting` (`accountingStart` / `accountingInterim` / `accountingStop` / `accountingOn` / `accountingOff`) | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy` | Uses `accountingPort` (or `port`, default 1813). Helpers map to `Acct-Status-Type` values, including `Accounting-On` and `Accounting-Off`. If neither NAS-IP-Address (4) nor NAS-Identifier (32) is provided, a NAS-IP-Address of `127.0.0.1` is injected. |
+| `sendAccounting` (`accountingStart` / `accountingInterim` / `accountingStop` / `accountingOn` / `accountingOff`) | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy` | Uses `accountingPort` (or `port`, default 1813). Retries to the same destination reuse one Accounting Identifier (and deterministic Request Authenticator with identical attrs/secret). Helpers map to `Acct-Status-Type` values, including `Accounting-On` and `Accounting-Off`. If neither NAS-IP-Address (4) nor NAS-Identifier (32) is provided, a NAS-IP-Address of `127.0.0.1` is injected. |
 | `sendCoa` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `dynamicAuthorizationRetryIdentityMode` | `coa_nak` is terminal (no retry). `dynamicAuthorizationRetryIdentityMode: "stable"` reuses one Identifier/Request-Authenticator across attempts. |
 | `sendDisconnect` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `dynamicAuthorizationRetryIdentityMode` | `disconnect_nak` is terminal (no retry). Same retry identity behavior as CoA. |
 | health probes (`failover` / background checks) | 🚫 `retry.*` is not used for probe calls (single probe attempt per host per cycle) | `healthCheckProbeMode`, `healthCheckTimeoutMs`; auth/status-server probe path applies `validateResponseSource`, `authMethod`, `chapId`, `chapChallenge` | `healthCheckProbeMode: "status-server"` first uses `radiusStatusServerProbe`; non-healthy results/errors fall back to auth probes for compatibility. Accounting/CoA/Disconnect timeout probe paths currently do not forward `validateResponseSource` (they use protocol default strict source validation, effectively `true`). Probe paths currently use strict length handling (no `responseLengthValidationPolicy` forwarding). |
@@ -145,6 +145,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | Access-Challenge continuation | `radiusAuthenticateWithContinuation`, `radiusContinueAuthenticate` | `maxChallengeRounds` defaults to 3. Continuation context carries `State`/`Proxy-State`; malformed/missing context returns `malformed_challenge_context`; limit overflow returns `challenge_round_limit_exceeded`. |
 | CHAP authentication | `authenticate` + auth health probes (including status-server fallback auth probes) | `authMethod: "chap"` enables CHAP credentials. `chapId` and `chapChallenge` can be set for deterministic behavior. |
 | Accounting On/Off operations | `accountingOn`, `accountingOff` (both call `sendAccounting`) | Encodes `Acct-Status-Type` as `Accounting-On` / `Accounting-Off`. `username` is optional; if `sessionId` is omitted, an `Acct-Session-Id` value is auto-generated per request. |
+| Accounting retry identity semantics | `sendAccounting` | Retries to the same destination reuse one Accounting Identifier per logical send. Source port is bound per logical send identity to keep retransmissions source-port stable when retries occur. |
 | Dynamic authorization retry identity | `sendCoa`, `sendDisconnect`, `dynamicAuthorizationRetryIdentityMode` | `per_attempt` (default) uses a fresh identity each attempt; `stable` reuses one identity across retries in a single send call. |
 | 64-bit accounting counters | `sendAccounting` and accounting helpers | `inputOctets64` / `outputOctets64` are split into low/high words (`42/52`, `43/53`) and take precedence over 32-bit fields when both are provided. |
 
@@ -156,8 +157,10 @@ import { radiusStatusServerProbe } from "ts-radius-client";
   - `compatibility`: warn on invalid Message-Authenticator and continue.
   - `strict`: reject missing/invalid Message-Authenticator as `malformed_response`.
 - `responseLengthValidationPolicy` is forwarded to `authenticate`, accounting, CoA, and Disconnect operations:
-  - `strict`: declared RADIUS length must equal UDP datagram length.
-  - `allow_trailing_bytes`: accepts trailing bytes and parses only the declared packet length.
+  - accounting default: `allow_trailing_bytes` (RFC padding-compatible; trailing bytes ignored).
+  - other operation default: `strict`.
+  - explicit `strict`: declared RADIUS length must equal UDP datagram length.
+  - explicit `allow_trailing_bytes`: accepts trailing bytes and parses only the declared packet length.
 
 ### Assignment extraction knobs
 
