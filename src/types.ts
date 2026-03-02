@@ -60,10 +60,12 @@ export interface RadiusResult {
   error?: string;
 }
 
-export interface RadiusDynamicAuthorizationAttribute {
+export interface RadiusAttribute {
   type: number;
   value: string | number | Buffer;
 }
+
+export type RadiusDynamicAuthorizationAttribute = RadiusAttribute;
 
 export interface RadiusDynamicAuthorizationRequestBase {
   /** Optional session identification attribute (User-Name / type 1) */
@@ -120,10 +122,7 @@ export interface RadiusProtocolOptions {
 
 export type RadiusAccountingStatusType = 'Start' | 'Stop' | 'Interim-Update';
 
-export interface RadiusAccountingAttribute {
-  type: number;
-  value: string | number | Buffer;
-}
+export type RadiusAccountingAttribute = RadiusAttribute;
 
 export interface RadiusAccountingRequestBase {
   username: string;
@@ -168,9 +167,9 @@ export interface RadiusConfig extends RadiusProtocolOptions {
   healthCheckTimeoutMs?: number;
   /** Probe strategy for host health checks (default: "auth") */
   healthCheckProbeMode?: HealthCheckProbeMode;
-  /** User for health check probe (Required) */
+  /** User for health check probes (required, including "status-server" mode for auth-fallback compatibility) */
   healthCheckUser: string;
-  /** Password for health check probe (Required) */
+  /** Password for health check probes (required, including "status-server" mode for auth-fallback compatibility) */
   healthCheckPassword: string;
   /** Retry behavior for authenticate() transport-level failures */
   retry?: RadiusRetryOptions;

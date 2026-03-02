@@ -9,11 +9,11 @@ type ExtendedAttributeId = (typeof EXTENDED_ATTRIBUTE_IDS)[number];
 type LongExtendedAttributeId = (typeof LONG_EXTENDED_ATTRIBUTE_IDS)[number];
 
 function isExtendedAttributeId(id: number): id is ExtendedAttributeId {
-  return EXTENDED_ATTRIBUTE_IDS.some((candidateId) => candidateId === id);
+  return EXTENDED_ATTRIBUTE_IDS.includes(id as ExtendedAttributeId);
 }
 
 function isLongExtendedAttributeId(id: number): id is LongExtendedAttributeId {
-  return LONG_EXTENDED_ATTRIBUTE_IDS.some((candidateId) => candidateId === id);
+  return LONG_EXTENDED_ATTRIBUTE_IDS.includes(id as LongExtendedAttributeId);
 }
 
 function decodeExtendedAttribute(id: ExtendedAttributeId, value: Buffer): ExtendedRadiusAttribute {
