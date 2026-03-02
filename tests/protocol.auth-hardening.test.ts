@@ -279,15 +279,24 @@ describe("radiusAuthenticate response hardening", () => {
   test("rejects duplicate Message-Authenticator in strict policy", async () => {
     const result = await runAuthScenario({
       protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
-      responseBuilder: (request) =>
-        buildAccessAcceptResponse({
-          request,
-          attributes: [
-            createClassAttribute("engineering"),
-            createMessageAuthenticatorAttribute(0x00),
-            createMessageAuthenticatorAttribute(0x11),
-          ],
-        }),
+      responseBuilder: (request) => {
+        const requestAuthenticator = request.subarray(4, 20);
+        const response = buildAccessAcceptResponseWithValidMessageAuthenticator({ request });
+
+        const responseWithDuplicateMessageAuthenticator = Buffer.concat([
+          response,
+          createMessageAuthenticatorAttribute(0x11),
+        ]);
+        responseWithDuplicateMessageAuthenticator.writeUInt16BE(
+          responseWithDuplicateMessageAuthenticator.length,
+          2,
+        );
+
+        writeResponseMessageAuthenticator(responseWithDuplicateMessageAuthenticator, requestAuthenticator);
+        writeResponseAuthenticator(responseWithDuplicateMessageAuthenticator, requestAuthenticator);
+
+        return responseWithDuplicateMessageAuthenticator;
+      },
     });
 
     expect(result.ok).toBe(false);
