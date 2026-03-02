@@ -79,6 +79,13 @@ export interface RadiusDynamicAuthorizationRequestBase {
 export type RadiusCoaRequest = RadiusDynamicAuthorizationRequestBase;
 export type RadiusDisconnectRequest = RadiusDynamicAuthorizationRequestBase;
 
+export interface RadiusDynamicAuthorizationRequestIdentity {
+  /** RFC5176 packet Identifier (1 octet). */
+  identifier: number;
+  /** RFC5176 packet Request Authenticator (16 octets). */
+  requestAuthenticator: Buffer;
+}
+
 export type RadiusErrorCauseSymbol =
   | "residual_session_context_removed"
   | "invalid_eap_packet"
@@ -128,6 +135,11 @@ export interface RadiusProtocolOptions {
   /** Validate response source host/port against request target host/port (default: true). */
   validateResponseSource?: boolean;
   /**
+   * Optional request identity override for CoA/Disconnect packets.
+   * When provided, both identifier and request authenticator are used verbatim.
+   */
+  dynamicAuthorizationRequestIdentity?: RadiusDynamicAuthorizationRequestIdentity;
+  /**
    * How to handle a present response Message-Authenticator (Type 80).
    * - compatibility (default): warn on invalid value and continue.
    * - strict: reject malformed/invalid values.
@@ -175,6 +187,8 @@ export interface RadiusRetryOptions {
   jitterRatio?: number;
 }
 
+export type DynamicAuthorizationRetryIdentityMode = "per_attempt" | "stable";
+
 export type HealthCheckProbeMode = "auth" | "status-server";
 
 export interface RadiusConfig extends RadiusProtocolOptions {
@@ -194,4 +208,10 @@ export interface RadiusConfig extends RadiusProtocolOptions {
   healthCheckPassword: string;
   /** Retry behavior for authenticate() transport-level failures */
   retry?: RadiusRetryOptions;
+  /**
+   * Controls CoA/Disconnect retry identity behavior.
+   * - per_attempt (default): each retry attempt uses a new packet identifier/authenticator.
+   * - stable: reuse one packet identifier/authenticator for all retries in a single logical send call.
+   */
+  dynamicAuthorizationRetryIdentityMode?: DynamicAuthorizationRetryIdentityMode;
 }

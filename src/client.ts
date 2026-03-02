@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from "./protocol";
 import {
@@ -8,9 +8,11 @@ import {
   type RadiusCoaResult,
   type RadiusConfig,
   type RadiusDynamicAuthorizationRequestBase,
+  type RadiusDynamicAuthorizationRequestIdentity,
   type RadiusDynamicAuthorizationResult,
   type RadiusDisconnectRequest,
   type RadiusDisconnectResult,
+  type DynamicAuthorizationRetryIdentityMode,
   type RadiusProtocolOptions,
   type RadiusResult,
   type Logger,
@@ -174,6 +176,19 @@ export class RadiusClient {
       backoffMultiplier: Math.max(1, backoffMultiplier),
       maxDelayMs: Math.max(0, maxDelayMs),
       jitterRatio: Math.max(0, Math.min(1, jitterRatio))
+    };
+  }
+
+  private getDynamicAuthorizationRetryIdentityMode(): DynamicAuthorizationRetryIdentityMode {
+    return this.config.dynamicAuthorizationRetryIdentityMode === "stable"
+      ? "stable"
+      : "per_attempt";
+  }
+
+  private createDynamicAuthorizationRequestIdentity(): RadiusDynamicAuthorizationRequestIdentity {
+    return {
+      identifier: randomBytes(1).readUInt8(0),
+      requestAuthenticator: randomBytes(16),
     };
   }
 
@@ -354,6 +369,10 @@ export class RadiusClient {
     const maxAttempts = Number.isFinite(retryPolicy.maxAttempts)
       ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
       : 1;
+    const retryIdentityMode = this.getDynamicAuthorizationRetryIdentityMode();
+    const stableRequestIdentity = retryIdentityMode === "stable"
+      ? this.createDynamicAuthorizationRequestIdentity()
+      : undefined;
 
     let lastResult: RadiusDynamicAuthorizationResult = {
       ok: false,
@@ -368,6 +387,7 @@ export class RadiusClient {
         host,
         username: request.username,
         sessionId: request.sessionId,
+        retryIdentityMode,
         attempt,
         maxAttempts
       });
@@ -381,6 +401,7 @@ export class RadiusClient {
           validateResponseSource: this.config.validateResponseSource,
           responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
           responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
+          dynamicAuthorizationRequestIdentity: stableRequestIdentity,
         };
 
         const result = await protocolCall(host, request, protocolOptions, this.logger);

@@ -1086,6 +1086,96 @@ describe('RadiusClient Failover', () => {
     retryClient.shutdown();
   });
 
+  test('sendCoa retries keep default per-attempt identity behavior when no identity mode is configured', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    responsiveCoaHosts = new Set(['10.0.0.2']);
+    coaCalls = [];
+    coaResponseBySessionId = new Map([
+      ['coa-default-identity-mode', [
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: true, acknowledged: true }
+      ]]
+    ]);
+
+    const result = await retryClient.sendCoa({
+      username: 'alice',
+      sessionId: 'coa-default-identity-mode'
+    });
+
+    const userCalls = coaCalls.filter((call) => call.request.sessionId === 'coa-default-identity-mode');
+
+    expect(result.ok).toBe(true);
+    expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(
+      userCalls.every((call) => call.options.dynamicAuthorizationRequestIdentity === undefined)
+    ).toBe(true);
+
+    retryClient.shutdown();
+  });
+
+  test('sendCoa retries reuse the same transaction identity across failover when stable identity mode is enabled', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      dynamicAuthorizationRetryIdentityMode: 'stable',
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    responsiveCoaHosts = new Set(['10.0.0.2']);
+    coaCalls = [];
+    coaResponseBySessionId = new Map([
+      ['coa-stable-identity-mode', [
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: true, acknowledged: true }
+      ]]
+    ]);
+
+    const result = await retryClient.sendCoa({
+      username: 'alice',
+      sessionId: 'coa-stable-identity-mode'
+    });
+
+    const userCalls = coaCalls.filter((call) => call.request.sessionId === 'coa-stable-identity-mode');
+    const identities = userCalls
+      .map((call) => call.options.dynamicAuthorizationRequestIdentity)
+      .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined);
+
+    expect(result.ok).toBe(true);
+    expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(identities).toHaveLength(2);
+
+    const firstIdentity = identities[0];
+    if (!firstIdentity) {
+      throw new Error('Expected first CoA retry identity to be defined');
+    }
+
+    for (const identity of identities.slice(1)) {
+      expect(identity.identifier).toBe(firstIdentity.identifier);
+      expect(identity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
+    }
+
+    retryClient.shutdown();
+  });
+
   test('sendDisconnect does not retry terminal NAK responses', async () => {
     const retryClient = new RadiusClient({
       ...config,
@@ -1127,6 +1217,57 @@ describe('RadiusClient Failover', () => {
     expect(userCalls[0]?.host).toBe('10.0.0.1');
     expect(timeoutHookModes).toHaveLength(0);
     expect(retryClient.getActiveHost()).toBe('10.0.0.1');
+
+    retryClient.shutdown();
+  });
+
+  test('sendDisconnect retries reuse the same transaction identity across failover when stable identity mode is enabled', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      dynamicAuthorizationRetryIdentityMode: 'stable',
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    responsiveDisconnectHosts = new Set(['10.0.0.2']);
+    disconnectCalls = [];
+    disconnectResponseBySessionId = new Map([
+      ['disconnect-stable-identity-mode', [
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: true, acknowledged: true }
+      ]]
+    ]);
+
+    const result = await retryClient.sendDisconnect({
+      username: 'alice',
+      sessionId: 'disconnect-stable-identity-mode'
+    });
+
+    const userCalls = disconnectCalls.filter((call) => call.request.sessionId === 'disconnect-stable-identity-mode');
+    const identities = userCalls
+      .map((call) => call.options.dynamicAuthorizationRequestIdentity)
+      .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined);
+
+    expect(result.ok).toBe(true);
+    expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(identities).toHaveLength(2);
+
+    const firstIdentity = identities[0];
+    if (!firstIdentity) {
+      throw new Error('Expected first Disconnect retry identity to be defined');
+    }
+
+    for (const identity of identities.slice(1)) {
+      expect(identity.identifier).toBe(firstIdentity.identifier);
+      expect(identity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
+    }
 
     retryClient.shutdown();
   });
