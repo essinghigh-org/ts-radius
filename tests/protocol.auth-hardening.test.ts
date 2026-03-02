@@ -18,6 +18,11 @@ function createMessageAuthenticatorAttribute(fillByte: number): Buffer {
   return Buffer.concat([Buffer.from([80, 18]), Buffer.alloc(16, fillByte)]);
 }
 
+function createMessageAuthenticatorAttributeWithLength(length: number, fillByte: number): Buffer {
+  const valueLength = Math.max(length - 2, 0);
+  return Buffer.concat([Buffer.from([80, length]), Buffer.alloc(valueLength, fillByte)]);
+}
+
 function buildAccessAcceptResponse(options: {
   request: Buffer;
   responseIdentifier?: number;
@@ -271,6 +276,82 @@ describe("radiusAuthenticate response hardening", () => {
     expect(result.error).toBe("malformed_response");
   });
 
+  test("rejects duplicate Message-Authenticator in strict policy", async () => {
+    const result = await runAuthScenario({
+      protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
+      responseBuilder: (request) => {
+        const requestAuthenticator = request.subarray(4, 20);
+        const response = buildAccessAcceptResponseWithValidMessageAuthenticator({ request });
+
+        const responseWithDuplicateMessageAuthenticator = Buffer.concat([
+          response,
+          createMessageAuthenticatorAttribute(0x11),
+        ]);
+        responseWithDuplicateMessageAuthenticator.writeUInt16BE(
+          responseWithDuplicateMessageAuthenticator.length,
+          2,
+        );
+
+        writeResponseMessageAuthenticator(responseWithDuplicateMessageAuthenticator, requestAuthenticator);
+        writeResponseAuthenticator(responseWithDuplicateMessageAuthenticator, requestAuthenticator);
+
+        return responseWithDuplicateMessageAuthenticator;
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("malformed_response");
+  });
+
+  test("rejects invalid Message-Authenticator length in strict policy", async () => {
+    const result = await runAuthScenario({
+      protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
+      responseBuilder: (request) =>
+        buildAccessAcceptResponse({
+          request,
+          attributes: [
+            createClassAttribute("engineering"),
+            createMessageAuthenticatorAttributeWithLength(17, 0x5a),
+          ],
+        }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("malformed_response");
+  });
+
+  test("rejects malformed/overrun attribute length interactions deterministically in strict policy", async () => {
+    const malformedBeforeMessageAuthenticator = await runAuthScenario({
+      protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
+      responseBuilder: (request) =>
+        buildAccessAcceptResponse({
+          request,
+          attributes: [Buffer.from([25, 0xff, 0x61]), createMessageAuthenticatorAttribute(0x00)],
+        }),
+    });
+
+    expect(malformedBeforeMessageAuthenticator.ok).toBe(false);
+    expect(malformedBeforeMessageAuthenticator.error).toBe("malformed_response");
+
+    const malformedAfterMessageAuthenticator = await runAuthScenario({
+      protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
+      responseBuilder: (request) => {
+        const requestAuthenticator = request.subarray(4, 20);
+        const response = buildAccessAcceptResponse({
+          request,
+          attributes: [createMessageAuthenticatorAttribute(0x00), Buffer.from([25, 0xff, 0x61])],
+        });
+
+        writeResponseMessageAuthenticator(response, requestAuthenticator);
+        writeResponseAuthenticator(response, requestAuthenticator);
+        return response;
+      },
+    });
+
+    expect(malformedAfterMessageAuthenticator.ok).toBe(false);
+    expect(malformedAfterMessageAuthenticator.error).toBe("malformed_response");
+  });
+
   test("rejects missing Message-Authenticator in strict policy", async () => {
     const result = await runAuthScenario({
       protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
@@ -292,6 +373,38 @@ describe("radiusAuthenticate response hardening", () => {
 
     expect(result.ok).toBe(true);
     expect(result.class).toBe("engineering");
+  });
+
+  test("rejects malformed declared packet length with strict length policy in strict Message-Authenticator mode", async () => {
+    const declaredLengthTooSmall = await runAuthScenario({
+      protocolOptions: {
+        responseLengthValidationPolicy: "strict",
+        responseMessageAuthenticatorPolicy: "strict",
+      },
+      responseBuilder: (request) => {
+        const response = buildAccessAcceptResponseWithValidMessageAuthenticator({ request });
+        response.writeUInt16BE(response.length - 1, 2);
+        return response;
+      },
+    });
+
+    expect(declaredLengthTooSmall.ok).toBe(false);
+    expect(declaredLengthTooSmall.error).toBe("malformed_response");
+
+    const declaredLengthTooLarge = await runAuthScenario({
+      protocolOptions: {
+        responseLengthValidationPolicy: "strict",
+        responseMessageAuthenticatorPolicy: "strict",
+      },
+      responseBuilder: (request) => {
+        const response = buildAccessAcceptResponseWithValidMessageAuthenticator({ request });
+        response.writeUInt16BE(response.length + 1, 2);
+        return response;
+      },
+    });
+
+    expect(declaredLengthTooLarge.ok).toBe(false);
+    expect(declaredLengthTooLarge.error).toBe("malformed_response");
   });
 
   test("keeps compatibility mode for invalid Message-Authenticator when present", async () => {
