@@ -30,6 +30,38 @@ function createTempFixturePath(fileName: string, payload: unknown): {
 }
 
 describe("Fixture schema validation", () => {
+    test("accepts fixture files with optional top-level $schema", () => {
+        const { relativePath, cleanup } = createTempFixturePath("valid.optional-schema.json", {
+            $schema: "./schema/radius-packet-fixture.schema.json",
+            name: "valid-optional-schema",
+            rfc: "RFC2865",
+            description: "Fixture with optional top-level $schema reference.",
+            packetHex: "02 01 00 1e 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 19 0a 65 6e 67 69 6e 65 65 72",
+            expected: {
+                code: 2,
+                identifier: 1,
+                length: 30,
+                authenticatorHexPattern: "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+                attributes: [
+                    {
+                        id: 25,
+                        name: "Class",
+                        rawHex: "656e67696e656572",
+                        decodedValue: "engineer",
+                    },
+                ],
+            },
+        });
+
+        try {
+            const fixture = loadRadiusPacketFixture(relativePath);
+
+            expect(fixture.name).toBe("valid-optional-schema");
+        } finally {
+            cleanup();
+        }
+    });
+
     test("rejects fixture files with unexpected top-level properties", () => {
         const { relativePath, cleanup } = createTempFixturePath("invalid.extra-top-level.json", {
             name: "invalid-extra-top-level",

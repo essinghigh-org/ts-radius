@@ -4,7 +4,7 @@ import { inspect } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import Ajv from "ajv";
-import type { ErrorObject, ValidateFunction } from "ajv";
+import type { ValidateFunction } from "ajv";
 
 import { decodeAttribute } from "../../src/helpers";
 import type { ParsedRadiusAttribute } from "../../src/types";
@@ -17,6 +17,7 @@ export interface PacketAttributeExpectation {
 }
 
 export interface RadiusPacketFixture {
+    $schema?: string;
     name: string;
     rfc: string;
     description: string;
@@ -87,15 +88,31 @@ function resolveFixturePath(relativePath: string): string {
     return fixtureRealPath;
 }
 
-function formatSchemaValidationErrors(errors: readonly ErrorObject[] | null | undefined): string {
+function formatSchemaValidationErrors(errors: readonly unknown[] | null | undefined): string {
     if (!errors || errors.length === 0) {
         return "unknown validation error";
     }
 
     return errors
         .map((error) => {
-            const location = error.instancePath.length === 0 ? "/" : error.instancePath;
-            const message = error.message ?? "is invalid";
+            if (!error || typeof error !== "object") {
+                return "/ is invalid";
+            }
+
+            const errorRecord = error as {
+                instancePath?: unknown;
+                dataPath?: unknown;
+                message?: unknown;
+            };
+
+            const rawPath =
+                typeof errorRecord.instancePath === "string"
+                    ? errorRecord.instancePath
+                    : typeof errorRecord.dataPath === "string"
+                      ? errorRecord.dataPath
+                      : "";
+            const location = rawPath.length === 0 ? "/" : rawPath;
+            const message = typeof errorRecord.message === "string" ? errorRecord.message : "is invalid";
 
             return `${location} ${message}`;
         })

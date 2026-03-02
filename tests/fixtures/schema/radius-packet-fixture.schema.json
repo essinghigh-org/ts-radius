@@ -12,6 +12,10 @@
     "expected"
   ],
   "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
     "name": {
       "type": "string",
       "minLength": 1
