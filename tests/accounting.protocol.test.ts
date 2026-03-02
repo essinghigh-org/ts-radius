@@ -171,6 +171,58 @@ describe("Accounting protocol", () => {
     }
   }
 
+  const forbiddenAccountingCustomAttributesError =
+    "[radius] invalid_request: accounting request customAttributes cannot include User-Password (2), CHAP-Password (3), Reply-Message (18), or State (24)";
+  const duplicateCoreAccountingCustomAttributesError =
+    "[radius] invalid_request: accounting request customAttributes cannot include Acct-Status-Type (40) or Acct-Session-Id (44) because core accounting fields are set exactly once";
+
+  describe("Accounting-Request customAttributes RFC2866 validation", () => {
+    const forbiddenAttributeCases: Array<{ type: number; name: string }> = [
+      { type: 2, name: "User-Password" },
+      { type: 3, name: "CHAP-Password" },
+      { type: 18, name: "Reply-Message" },
+      { type: 24, name: "State" }
+    ];
+
+    for (const testCase of forbiddenAttributeCases) {
+      test(`rejects forbidden ${testCase.name} (${String(testCase.type)}) in accounting request customAttributes`, async () => {
+        await expectAccountingRequestRejection(
+          {
+            username: "alice",
+            sessionId: "session-forbidden-attribute",
+            statusType: "Start",
+            attributes: [{ type: testCase.type, value: "forbidden" }]
+          },
+          forbiddenAccountingCustomAttributesError
+        );
+      });
+    }
+
+    test("rejects Acct-Status-Type (40) in accounting request customAttributes", async () => {
+      await expectAccountingRequestRejection(
+        {
+          username: "alice",
+          sessionId: "session-duplicate-status",
+          statusType: "Start",
+          attributes: [{ type: 40, value: 1 }]
+        },
+        duplicateCoreAccountingCustomAttributesError
+      );
+    });
+
+    test("rejects Acct-Session-Id (44) in accounting request customAttributes", async () => {
+      await expectAccountingRequestRejection(
+        {
+          username: "alice",
+          sessionId: "session-duplicate-session",
+          statusType: "Start",
+          attributes: [{ type: 44, value: "other-session" }]
+        },
+        duplicateCoreAccountingCustomAttributesError
+      );
+    });
+  });
+
   test("builds Accounting-Request packet for Start and validates Accounting-Response", async () => {
     const server = await bindServer();
     const receivedPackets: Buffer[] = [];

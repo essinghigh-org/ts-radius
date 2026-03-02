@@ -50,7 +50,14 @@ const MAX_ACCOUNTING_PACKET_LENGTH = 4095;
 const MAX_DYNAMIC_AUTHORIZATION_PACKET_LENGTH = 4096;
 const NAS_IP_ADDRESS_ATTRIBUTE_TYPE = 4;
 const NAS_IDENTIFIER_ATTRIBUTE_TYPE = 32;
+const ACCT_STATUS_TYPE_ATTRIBUTE = 40;
+const ACCT_SESSION_ID_ATTRIBUTE = 44;
 const DEFAULT_NAS_IP_ADDRESS_VALUE = Buffer.from([127, 0, 0, 1]);
+const FORBIDDEN_ACCOUNTING_CUSTOM_ATTRIBUTE_TYPES: ReadonlyArray<number> = [2, 3, 18, 24];
+const FORBIDDEN_ACCOUNTING_CUSTOM_ATTRIBUTES_ERROR =
+  "[radius] invalid_request: accounting request customAttributes cannot include User-Password (2), CHAP-Password (3), Reply-Message (18), or State (24)";
+const DUPLICATE_CORE_ACCOUNTING_CUSTOM_ATTRIBUTES_ERROR =
+  "[radius] invalid_request: accounting request customAttributes cannot include Acct-Status-Type (40) or Acct-Session-Id (44) because core accounting fields are set exactly once";
 
 const UINT32_MASK_BIGINT = 0xffff_ffffn;
 const UINT64_MAX_BIGINT = 0xffff_ffff_ffff_ffffn;
@@ -474,6 +481,14 @@ function validateAccountingRequest(request: RadiusAccountingRequest): void {
     );
   }
 
+  if (FORBIDDEN_ACCOUNTING_CUSTOM_ATTRIBUTE_TYPES.some((attributeType) => customAccountingTypes.has(attributeType))) {
+    throw new Error(FORBIDDEN_ACCOUNTING_CUSTOM_ATTRIBUTES_ERROR);
+  }
+
+  if (customAccountingTypes.has(ACCT_STATUS_TYPE_ATTRIBUTE) || customAccountingTypes.has(ACCT_SESSION_ID_ATTRIBUTE)) {
+    throw new Error(DUPLICATE_CORE_ACCOUNTING_CUSTOM_ATTRIBUTES_ERROR);
+  }
+
   for (const attribute of request.attributes ?? []) {
     if (!isRadiusAttributeType(attribute.type)) {
       throw new Error("[radius] accounting attribute type must be an integer between 1 and 255");
@@ -534,8 +549,8 @@ function buildAccountingAttributes(request: RadiusAccountingRequest): Buffer[] {
     attrs.push(encodeStringAttribute(1, request.username));
   }
 
-  attrs.push(encodeIntegerAttribute(40, ACCOUNTING_STATUS_VALUES[request.statusType]));
-  attrs.push(encodeStringAttribute(44, resolvedSessionId));
+  attrs.push(encodeIntegerAttribute(ACCT_STATUS_TYPE_ATTRIBUTE, ACCOUNTING_STATUS_VALUES[request.statusType]));
+  attrs.push(encodeStringAttribute(ACCT_SESSION_ID_ATTRIBUTE, resolvedSessionId));
 
   if (!hasAccountingNasIdentifier(request)) {
     attrs.push(encodeRadiusAttribute(NAS_IP_ADDRESS_ATTRIBUTE_TYPE, DEFAULT_NAS_IP_ADDRESS_VALUE));
