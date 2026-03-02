@@ -88,6 +88,10 @@ function buildDynamicAuthorizationResponse(
   return response;
 }
 
+function appendTrailingBytes(packet: Buffer): Buffer {
+  return Buffer.concat([packet, Buffer.from([0xde, 0xad, 0xbe, 0xef])]);
+}
+
 function closeSocket(server: dgram.Socket): Promise<void> {
   return new Promise((resolve) => {
     server.close(() => {
@@ -675,6 +679,130 @@ describe("CoA/Disconnect protocol", () => {
       expect(result.ok).toBe(false);
       expect(result.acknowledged).toBe(false);
       expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects CoA trailing bytes by default strict length policy", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 44));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-coa-strict-trailing-bytes"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("accepts CoA trailing bytes in allow_trailing_bytes mode", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 44, [
+        encodeStringAttribute(18, "coerced")
+      ]));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-coa-allow-trailing-bytes"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "allow_trailing_bytes"
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.acknowledged).toBe(true);
+      expect(result.error).toBeUndefined();
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects Disconnect trailing bytes by default strict length policy", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 41));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusDisconnect(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-disconnect-strict-trailing-bytes"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("accepts Disconnect trailing bytes in allow_trailing_bytes mode", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 41));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusDisconnect(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-disconnect-allow-trailing-bytes"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "allow_trailing_bytes"
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.acknowledged).toBe(true);
+      expect(result.error).toBeUndefined();
     } finally {
       await closeSocket(server);
     }
