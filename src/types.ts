@@ -60,11 +60,13 @@ export interface RadiusResult {
   error?: string;
 }
 
+export type ResponseLengthValidationPolicy = "strict" | "allow_trailing_bytes";
 export type ResponseMessageAuthenticatorPolicy = "compatibility" | "strict";
 
 export interface RadiusProtocolOptions {
   secret: string;
   port?: number;
+  accountingPort?: number;
   timeoutMs?: number;
   assignmentAttributeId?: number;
   vendorId?: number;
@@ -78,6 +80,36 @@ export interface RadiusProtocolOptions {
    * - strict: reject malformed/invalid values.
    */
   responseMessageAuthenticatorPolicy?: ResponseMessageAuthenticatorPolicy;
+  /**
+   * How response length mismatches are handled.
+   * - strict (default): declared packet length must equal UDP datagram length.
+   * - allow_trailing_bytes: accept datagrams with extra trailing bytes and parse only declared length.
+   */
+  responseLengthValidationPolicy?: ResponseLengthValidationPolicy;
+}
+
+export type RadiusAccountingStatusType = 'Start' | 'Stop' | 'Interim-Update';
+
+export interface RadiusAccountingAttribute {
+  type: number;
+  value: string | number | Buffer;
+}
+
+export interface RadiusAccountingRequestBase {
+  username: string;
+  sessionId: string;
+  sessionTime?: number;
+  inputOctets?: number;
+  outputOctets?: number;
+  inputPackets?: number;
+  outputPackets?: number;
+  delayTime?: number;
+  terminateCause?: number;
+  attributes?: RadiusAccountingAttribute[];
+}
+
+export interface RadiusAccountingRequest extends RadiusAccountingRequestBase {
+  statusType: RadiusAccountingStatusType;
 }
 
 export interface RadiusRetryOptions {

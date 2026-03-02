@@ -1,5 +1,12 @@
-import { radiusAuthenticate, radiusStatusServerProbe } from "./protocol";
-import { type RadiusConfig, type RadiusResult, type Logger, ConsoleLogger } from "./types";
+import { radiusAccounting, radiusAuthenticate, radiusStatusServerProbe } from "./protocol";
+import {
+  type RadiusAccountingRequest,
+  type RadiusAccountingRequestBase,
+  type RadiusConfig,
+  type RadiusResult,
+  type Logger,
+  ConsoleLogger
+} from "./types";
 
 interface HostHealth {
   host: string;
@@ -171,6 +178,57 @@ export class RadiusClient {
       || result.error === 'unknown_code';
   }
 
+  public async sendAccounting(request: RadiusAccountingRequest): Promise<RadiusResult> {
+    const host = this.getActiveHost();
+    const timeoutMs = this.config.timeoutMs || 5000;
+    const accountingPort = this.config.accountingPort || this.config.port || 1813;
+
+    this.logger.debug("[radius-client] accounting start", {
+      host,
+      statusType: request.statusType,
+      sessionId: request.sessionId
+    });
+
+    try {
+      const protocolOptions = {
+        secret: this.config.secret,
+        port: accountingPort,
+        accountingPort,
+        timeoutMs: timeoutMs
+      };
+
+      const result = await radiusAccounting(host, request, protocolOptions, this.logger);
+
+      if (!result.ok && result.error === "timeout") {
+        this.logger.warn("[radius-client] accounting timeout detected", {
+          host,
+          statusType: request.statusType,
+          sessionId: request.sessionId
+        });
+        this.onAccountingTimeout(request).catch((error: unknown) => {
+          this.logger.warn("[radius-client] onAccountingTimeout error", error);
+        });
+      }
+
+      return result;
+    } catch (e) {
+      this.logger.error("[radius-client] accounting exception", { error: e });
+      throw e;
+    }
+  }
+
+  public accountingStart(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Start" });
+  }
+
+  public accountingInterim(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Interim-Update" });
+  }
+
+  public accountingStop(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Stop" });
+  }
+
   // --- Internal Failover / Health Logic ---
 
   private reloadHostsFromConfig() {
@@ -266,7 +324,7 @@ export class RadiusClient {
     }
   }
 
-  public async failover(): Promise<string | null> {
+  public async failover(probeType: "auth" | "accounting" = "auth"): Promise<string | null> {
     let lockBusyAfterWait = this.inProgress;
     if (lockBusyAfterWait) {
       const deadline = Date.now() + 100;
@@ -291,9 +349,10 @@ export class RadiusClient {
       const ordered = [...this.hosts.slice(startIndex), ...this.hosts.slice(0, startIndex)];
       for (const host of ordered) {
         if (host === this.activeHost) continue;
-        const ok = await this.probeHost(host);
+        const ok = await this.probeHost(host, probeType);
         if (ok) {
-          this.setActiveHost(host, 'failover');
+          const reason = probeType === "accounting" ? "failover-accounting" : "failover";
+          this.setActiveHost(host, reason);
           return host;
         }
       }
@@ -306,7 +365,7 @@ export class RadiusClient {
     }
   }
 
-  private async probeHost(host: string): Promise<boolean> {
+  private async probeHost(host: string, probeType: "auth" | "accounting" = "auth"): Promise<boolean> {
     const hcUser = this.config.healthCheckUser;
     const hcPass = this.config.healthCheckPassword;
     const timeoutMs = this.config.healthCheckTimeoutMs || 5000;
@@ -353,7 +412,35 @@ export class RadiusClient {
     };
 
     try {
-      this.logger.debug('[radius-client] probing host', { host, mode: probeMode });
+  this.logger.debug('[radius-client] probing host', { host, probeType, mode: probeMode });
+
+      if (probeType === "accounting") {
+        const accountingPort = this.config.accountingPort || this.config.port || 1813;
+        const accountingProbeRequest: RadiusAccountingRequest = {
+          username: hcUser,
+          sessionId: `health-${String(Date.now())}`,
+          statusType: "Interim-Update"
+        };
+        const accountingOptions = {
+          secret: this.config.secret,
+          port: accountingPort,
+          accountingPort,
+          timeoutMs
+        };
+
+        const accountingRes = await radiusAccounting(
+          host,
+          accountingProbeRequest,
+          accountingOptions,
+          this.logger
+        );
+
+        if (accountingRes.ok) {
+          return markHealthy('accounting');
+        }
+
+        return markUnhealthy(`accounting-${accountingRes.error || 'negative-response'}`);
+      }
       const port = this.config.port || 1812;
 
       const protocolOptions = {
@@ -395,10 +482,24 @@ export class RadiusClient {
   private async onAuthTimeout() {
     this.logger.warn('[radius-client] auth timeout detected; probing active host');
     if (this.activeHost) {
-      const alive = await this.probeHost(this.activeHost);
-      if (!alive) await this.failover();
+      const alive = await this.probeHost(this.activeHost, "auth");
+      if (!alive) await this.failover("auth");
     } else {
       await this.backgroundHealthCycle();
+    }
+  }
+
+  // Called when an accounting attempt times out to verify accounting path health before failover.
+  private async onAccountingTimeout(request: RadiusAccountingRequest) {
+    this.logger.warn('[radius-client] accounting timeout detected; probing active host on accounting path', {
+      statusType: request.statusType,
+      sessionId: request.sessionId
+    });
+    if (this.activeHost) {
+      const alive = await this.probeHost(this.activeHost, "accounting");
+      if (!alive) await this.failover("accounting");
+    } else {
+      await this.failover("accounting");
     }
   }
 }

@@ -1,6 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { RadiusClient } from '../src/client';
-import type { RadiusConfig, RadiusResult, RadiusProtocolOptions } from '../src/types';
+import type {
+  RadiusAccountingRequest,
+  RadiusConfig,
+  RadiusResult,
+  RadiusProtocolOptions
+} from '../src/types';
 
 interface RadiusStatusProbeResult {
   ok: boolean;
@@ -13,6 +18,7 @@ let responsiveHosts: Set<string> = new Set();
 let rejectingHosts: Set<string> = new Set();
 let statusResponsiveHosts: Set<string> = new Set();
 let statusUnsupportedHosts: Set<string> = new Set();
+let responsiveAccountingHosts: Set<string> = new Set();
 let authCalls: {
   host: string;
   username: string;
@@ -22,6 +28,12 @@ let authCalls: {
 }[] = [];
 let statusCalls: {
   host: string;
+  options: RadiusProtocolOptions;
+  logger: unknown;
+}[] = [];
+let accountingCalls: {
+  host: string;
+  request: RadiusAccountingRequest;
   options: RadiusProtocolOptions;
   logger: unknown;
 }[] = [];
@@ -63,6 +75,20 @@ void mock.module('../src/protocol', () => ({
     }
 
     return { ok: true };
+  },
+  radiusAccounting: async (
+    host: string,
+    request: RadiusAccountingRequest,
+    options: RadiusProtocolOptions,
+    logger?: unknown
+  ): Promise<RadiusResult> => {
+    accountingCalls.push({ host, request, options, logger });
+
+    if (!responsiveAccountingHosts.has(host)) {
+      return { ok: false, error: 'timeout' };
+    }
+
+    return { ok: true };
   }
 }));
 
@@ -73,6 +99,7 @@ describe('RadiusClient Failover', () => {
     hosts: ['10.0.0.1', '10.0.0.2', '10.0.0.3'],
     secret: 'secret',
     timeoutMs: 100,
+    accountingPort: 1813,
     healthCheckIntervalMs: 1000,
     healthCheckTimeoutMs: 100,
     healthCheckUser: 'test_health_user',
@@ -114,8 +141,10 @@ describe('RadiusClient Failover', () => {
     rejectingHosts = new Set();
     statusResponsiveHosts = new Set(['10.0.0.1']);
     statusUnsupportedHosts = new Set();
+    responsiveAccountingHosts = new Set(['10.0.0.1']);
     authCalls = [];
     statusCalls = [];
+    accountingCalls = [];
     client = new RadiusClient(config);
   });
 
@@ -483,5 +512,65 @@ describe('RadiusClient Failover', () => {
     expect(fallbackAuthProbe).toBeDefined();
 
     statusClient.shutdown();
+  });
+
+  test('accountingStart/accountingInterim/accountingStop send typed status values', async () => {
+    await client.accountingStart({
+      username: 'alice',
+      sessionId: 'session-1'
+    });
+
+    await client.accountingInterim({
+      username: 'alice',
+      sessionId: 'session-1',
+      sessionTime: 30,
+      inputOctets: 2048,
+      outputOctets: 4096
+    });
+
+    await client.accountingStop({
+      username: 'alice',
+      sessionId: 'session-1',
+      sessionTime: 60,
+      terminateCause: 1
+    });
+
+    expect(accountingCalls).toHaveLength(3);
+
+    const [startCall, interimCall, stopCall] = accountingCalls;
+
+    expect(startCall?.request.statusType).toBe('Start');
+    expect(interimCall?.request.statusType).toBe('Interim-Update');
+    expect(stopCall?.request.statusType).toBe('Stop');
+
+    expect(startCall?.options).toMatchObject({
+      secret: 'secret',
+      port: 1813,
+      timeoutMs: 100
+    });
+  });
+
+  test('sendAccounting timeout triggers failover when auth path is healthy but accounting path is unhealthy', async () => {
+    responsiveHosts = new Set(['10.0.0.1', '10.0.0.2']);
+    responsiveAccountingHosts = new Set(['10.0.0.2']);
+
+    const authResult = await client.authenticate('alice', 'password');
+    expect(authResult.ok).toBe(true);
+    expect(client.getActiveHost()).toBe('10.0.0.1');
+
+    const result = await client.sendAccounting({
+      username: 'alice',
+      sessionId: 'session-timeout',
+      statusType: 'Start'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+
+    await waitForCondition(
+      () => client.getActiveHost() === '10.0.0.2',
+      Math.max(healthTimeoutMs * 3, 250),
+      'Expected active host to fail over to 10.0.0.2 after accounting timeout'
+    );
   });
 });
