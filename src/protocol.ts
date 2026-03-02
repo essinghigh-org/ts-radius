@@ -12,6 +12,7 @@ import type {
   RadiusCoaResult,
   RadiusDisconnectRequest,
   RadiusDisconnectResult,
+  RadiusErrorCauseSymbol,
   RadiusDynamicAuthorizationAttribute,
   RadiusDynamicAuthorizationRequestBase,
   RadiusDynamicAuthorizationResult,
@@ -35,6 +36,25 @@ const COA_REQUEST_CODE = 43;
 const COA_ACK_CODE = 44;
 const COA_NAK_CODE = 45;
 const ERROR_CAUSE_ATTRIBUTE_TYPE = 101;
+const RFC5176_ERROR_CAUSE_SYMBOLS: Readonly<Partial<Record<number, RadiusErrorCauseSymbol>>> = {
+  201: "residual_session_context_removed",
+  202: "invalid_eap_packet",
+  401: "unsupported_attribute",
+  402: "missing_attribute",
+  403: "nas_identification_mismatch",
+  404: "invalid_request",
+  405: "unsupported_service",
+  406: "unsupported_extension",
+  407: "invalid_attribute_value",
+  501: "administratively_prohibited",
+  502: "request_not_routable",
+  503: "session_context_not_found",
+  504: "session_context_not_removable",
+  505: "other_proxy_processing_error",
+  506: "resources_unavailable",
+  507: "request_initiated",
+  508: "multiple_session_selection_unsupported"
+};
 
 interface DynamicAuthorizationCodes {
   request: number;
@@ -374,6 +394,14 @@ function buildDynamicAuthorizationAttributes(request: RadiusDynamicAuthorization
 function extractErrorCause(attributes: ParsedRadiusAttribute[]): number | undefined {
   const errorCause = attributes.find((attribute) => attribute.id === ERROR_CAUSE_ATTRIBUTE_TYPE);
   return typeof errorCause?.value === "number" ? errorCause.value : undefined;
+}
+
+function mapErrorCauseSymbol(errorCause: number | undefined): RadiusErrorCauseSymbol | undefined {
+  if (errorCause === undefined) {
+    return undefined;
+  }
+
+  return RFC5176_ERROR_CAUSE_SYMBOLS[errorCause];
 }
 
 // Minimal RADIUS client using UDP for Access-Request/Accept exchange.
@@ -1283,13 +1311,15 @@ async function sendDynamicAuthorization(
       }
 
       if (code === codes.nak) {
+        const errorCause = extractErrorCause(parsedAttributes);
         resolve({
           ok: false,
           acknowledged: false,
           attributes: parsedAttributes,
           raw: response.toString("hex"),
           error: codes.nakError,
-          errorCause: extractErrorCause(parsedAttributes)
+          errorCause,
+          errorCauseSymbol: mapErrorCauseSymbol(errorCause)
         });
         return;
       }
