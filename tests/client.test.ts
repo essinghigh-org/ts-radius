@@ -1472,6 +1472,9 @@ describe('RadiusClient Failover', () => {
     expect(firstIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.identifier).not.toBe(firstIdentity.identifier);
+    expect(firstIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).not.toBe(firstIdentity.sourcePort);
 
     retryClient.shutdown();
   });
@@ -1575,6 +1578,9 @@ describe('RadiusClient Failover', () => {
     expect(firstIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.identifier).not.toBe(firstIdentity.identifier);
+    expect(firstIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).not.toBe(firstIdentity.sourcePort);
 
     retryClient.shutdown();
   });
@@ -1636,6 +1642,8 @@ describe('RadiusClient Failover', () => {
     expect(secondIdentity.identifier).toBe(firstIdentity.identifier);
     expect(firstIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.requestAuthenticator).toBeUndefined();
+    expect(firstIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).toBe(firstIdentity.sourcePort);
 
     retryClient.shutdown();
   });
@@ -1788,6 +1796,9 @@ describe('RadiusClient Failover', () => {
     expect(firstIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.identifier).not.toBe(firstIdentity.identifier);
+    expect(firstIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).not.toBe(firstIdentity.sourcePort);
 
     retryClient.shutdown();
   });
@@ -1849,6 +1860,8 @@ describe('RadiusClient Failover', () => {
     expect(secondIdentity.identifier).toBe(firstIdentity.identifier);
     expect(firstIdentity.requestAuthenticator).toBeUndefined();
     expect(secondIdentity.requestAuthenticator).toBeUndefined();
+    expect(firstIdentity.sourcePort).toBeGreaterThan(0);
+    expect(secondIdentity.sourcePort).toBe(firstIdentity.sourcePort);
 
     retryClient.shutdown();
   });
@@ -2133,9 +2146,66 @@ describe('RadiusClient Failover', () => {
         throw new Error('Expected first accounting retry identity to be defined');
       }
 
+      expect(firstIdentity.sourcePort).toBeGreaterThan(0);
+
       for (const identity of identities.slice(1)) {
         expect(identity.identifier).toBe(firstIdentity.identifier);
+        expect(identity.sourcePort).toBe(firstIdentity.sourcePort);
       }
+    } finally {
+      retryClient.shutdown();
+    }
+  });
+
+  test('sendAccounting rotates retry source port after failover to a different host', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 0,
+        backoffMultiplier: 1,
+        maxDelayMs: 0,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    try {
+      responsiveAccountingHosts = new Set(['10.0.0.2']);
+      accountingCalls = [];
+      accountingResponseBySessionId = new Map([
+        ['accounting-failover-source-port', [
+          { ok: false, error: 'timeout' },
+          { ok: true }
+        ]]
+      ]);
+
+      const result = await retryClient.sendAccounting({
+        username: 'alice',
+        sessionId: 'accounting-failover-source-port',
+        statusType: 'Interim-Update'
+      });
+
+      const userCalls = accountingCalls.filter((call) => call.request.sessionId === 'accounting-failover-source-port');
+      const identities = userCalls
+        .map((call) => call.options.accountingRequestIdentity)
+        .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined);
+
+      expect(result.ok).toBe(true);
+      expect(userCalls).toHaveLength(2);
+      expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+      expect(identities).toHaveLength(2);
+
+      const firstIdentity = identities[0];
+      const secondIdentity = identities[1];
+      if (!firstIdentity || !secondIdentity) {
+        throw new Error('Expected accounting retry identities to be defined for both hosts');
+      }
+
+      expect(firstIdentity.sourcePort).toBeGreaterThan(0);
+      expect(secondIdentity.sourcePort).toBeGreaterThan(0);
+      expect(secondIdentity.sourcePort).not.toBe(firstIdentity.sourcePort);
     } finally {
       retryClient.shutdown();
     }

@@ -58,6 +58,10 @@ const defaultProtocolAdapter: RadiusProtocolAdapter = {
   radiusDisconnect,
 };
 
+const MIN_MANAGED_SOURCE_PORT = 49152;
+const MAX_MANAGED_SOURCE_PORT = 65535;
+const MANAGED_SOURCE_PORT_RANGE = (MAX_MANAGED_SOURCE_PORT - MIN_MANAGED_SOURCE_PORT) + 1;
+
 export class RadiusClient {
   private config: RadiusConfig;
   private logger: Logger;
@@ -68,6 +72,8 @@ export class RadiusClient {
   private inProgress: boolean = false;
   private inProgressWaiters: Array<() => void> = [];
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
+  private nextManagedSourcePort: number =
+    MIN_MANAGED_SOURCE_PORT + (randomBytes(2).readUInt16BE(0) % MANAGED_SOURCE_PORT_RANGE);
 
   constructor(config: RadiusConfig, logger?: Logger, dependencies?: RadiusClientDependencies) {
     this.config = config;
@@ -194,15 +200,28 @@ export class RadiusClient {
     return randomBytes(1).readUInt8(0);
   }
 
+  private allocateManagedSourcePort(): number {
+    const sourcePort = this.nextManagedSourcePort;
+    this.nextManagedSourcePort += 1;
+
+    if (this.nextManagedSourcePort > MAX_MANAGED_SOURCE_PORT) {
+      this.nextManagedSourcePort = MIN_MANAGED_SOURCE_PORT;
+    }
+
+    return sourcePort;
+  }
+
   private createDynamicAuthorizationRequestIdentity(): RadiusDynamicAuthorizationRequestIdentity {
     return {
       identifier: this.createDynamicAuthorizationRequestIdentifier(),
+      sourcePort: this.allocateManagedSourcePort(),
     };
   }
 
   private createAccountingRequestIdentity(): RadiusAccountingRequestIdentity {
     return {
       identifier: randomBytes(1).readUInt8(0),
+      sourcePort: this.allocateManagedSourcePort(),
     };
   }
 

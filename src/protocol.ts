@@ -1864,17 +1864,6 @@ export async function radiusAccounting(
       return;
     }
 
-    if (options.accountingRequestIdentity) {
-      client.bind(0, () => {
-        const localAddress = client.address();
-        if (typeof localAddress !== "string") {
-          requestIdentity.sourcePort = localAddress.port;
-        }
-        sendPacket();
-      });
-      return;
-    }
-
     sendPacket();
   });
 }
@@ -2122,17 +2111,6 @@ async function sendDynamicAuthorization(
 
     if (requestIdentity.sourcePort !== undefined) {
       client.bind(requestIdentity.sourcePort, () => {
-        sendPacket();
-      });
-      return;
-    }
-
-    if (options.dynamicAuthorizationRequestIdentity) {
-      client.bind(0, () => {
-        const localAddress = client.address();
-        if (typeof localAddress !== "string") {
-          requestIdentity.sourcePort = localAddress.port;
-        }
         sendPacket();
       });
       return;
