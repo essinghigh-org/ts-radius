@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { inspect } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,7 @@ export interface DecodedRadiusPacket {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURES_ROOT = path.resolve(__dirname, "..", "fixtures");
+const FIXTURES_ROOT_REALPATH = realpathSync(FIXTURES_ROOT);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
@@ -97,36 +98,118 @@ function toDisplay(value: unknown): string {
     return inspect(value, { depth: null, breakLength: Infinity });
 }
 
+function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
+    const relativePath = path.relative(rootPath, targetPath);
+
+    return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function resolveFixturePath(relativePath: string): string {
+    if (relativePath.trim().length === 0) {
+        throw new Error("Fixture path must not be empty");
+    }
+
+    if (path.isAbsolute(relativePath)) {
+        throw new Error(`Fixture path must be relative to tests/fixtures: ${relativePath}`);
+    }
+
+    const fixturePath = path.resolve(FIXTURES_ROOT, relativePath);
+
+    if (!isPathInsideRoot(FIXTURES_ROOT, fixturePath)) {
+        throw new Error(`Fixture path escapes tests/fixtures: ${relativePath}`);
+    }
+
+    const fixtureRealPath = realpathSync(fixturePath);
+    if (!isPathInsideRoot(FIXTURES_ROOT_REALPATH, fixtureRealPath)) {
+        throw new Error(`Fixture path resolves outside tests/fixtures: ${relativePath}`);
+    }
+
+    return fixtureRealPath;
+}
+
+function decodedArraysMatch(actual: unknown[], expected: unknown[]): boolean {
+    if (actual.length !== expected.length) {
+        return false;
+    }
+
+    return actual.every((actualItem, index) => decodedValuesMatch(actualItem, expected[index]));
+}
+
+function decodedRecordsMatch(actual: Record<string, unknown>, expected: Record<string, unknown>): boolean {
+    const actualKeys = Object.keys(actual).sort();
+    const expectedKeys = Object.keys(expected).sort();
+
+    if (actualKeys.length !== expectedKeys.length) {
+        return false;
+    }
+
+    for (const [index, key] of actualKeys.entries()) {
+        if (key !== expectedKeys[index]) {
+            return false;
+        }
+    }
+
+    return actualKeys.every((key) => decodedValuesMatch(actual[key], expected[key]));
+}
+
 function decodedValuesMatch(actual: unknown, expected: unknown): boolean {
-    if (actual instanceof Date) {
+    if (actual instanceof Date || expected instanceof Date) {
         if (typeof expected === "string") {
-            return actual.toISOString() === expected;
+            return actual instanceof Date && actual.toISOString() === expected;
         }
 
-        if (expected instanceof Date) {
+        if (actual instanceof Date && expected instanceof Date) {
             return actual.getTime() === expected.getTime();
         }
 
         return false;
     }
 
-    if (typeof actual === "bigint" && typeof expected === "string") {
-        try {
-            return actual === BigInt(expected);
-        } catch {
-            return false;
+    if (typeof actual === "bigint" || typeof expected === "bigint") {
+        if (typeof actual === "bigint" && typeof expected === "string") {
+            try {
+                return actual === BigInt(expected);
+            } catch {
+                return false;
+            }
         }
+
+        if (typeof expected === "bigint" && typeof actual === "string") {
+            try {
+                return BigInt(actual) === expected;
+            } catch {
+                return false;
+            }
+        }
+
+        if (typeof actual === "bigint" && typeof expected === "bigint") {
+            return actual === expected;
+        }
+
+        return false;
     }
 
-    if (typeof actual === "object" && actual !== null) {
-        return JSON.stringify(actual) === JSON.stringify(expected);
+    if (Array.isArray(actual) || Array.isArray(expected)) {
+        if (!Array.isArray(actual) || !Array.isArray(expected)) {
+            return false;
+        }
+
+        return decodedArraysMatch(actual, expected);
+    }
+
+    if (isRecord(actual) || isRecord(expected)) {
+        if (!isRecord(actual) || !isRecord(expected)) {
+            return false;
+        }
+
+        return decodedRecordsMatch(actual, expected);
     }
 
     return Object.is(actual, expected);
 }
 
 export function loadRadiusPacketFixture(relativePath: string): RadiusPacketFixture {
-    const fixturePath = path.resolve(FIXTURES_ROOT, relativePath);
+    const fixturePath = resolveFixturePath(relativePath);
     const fixtureContent = readFileSync(fixturePath, "utf8");
     const parsed = JSON.parse(fixtureContent) as unknown;
 
