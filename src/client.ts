@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from "./protocol";
 import {
   type RadiusAccountingRequest,
@@ -5,8 +7,11 @@ import {
   type RadiusCoaRequest,
   type RadiusCoaResult,
   type RadiusConfig,
+  type RadiusDynamicAuthorizationRequestBase,
+  type RadiusDynamicAuthorizationResult,
   type RadiusDisconnectRequest,
   type RadiusDisconnectResult,
+  type RadiusProtocolOptions,
   type RadiusResult,
   type Logger,
   ConsoleLogger
@@ -57,6 +62,7 @@ export class RadiusClient {
   private health: Map<string, HostHealth> = new Map();
   private activeHost: string | null = null;
   private inProgress: boolean = false;
+  private inProgressWaiters: Array<() => void> = [];
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: RadiusConfig, logger?: Logger, dependencies?: RadiusClientDependencies) {
@@ -109,7 +115,6 @@ export class RadiusClient {
 
       this.logger.debug('[radius-client] authenticate start', {
         host,
-        user: username,
         attempt,
         maxAttempts
       });
@@ -218,43 +223,92 @@ export class RadiusClient {
       || result.error === 'unknown_code';
   }
 
+  private isRetryableAccountingFailure(result: RadiusResult): boolean {
+    if (result.ok) return false;
+
+    return result.error === 'timeout'
+      || result.error === 'malformed_response'
+      || result.error === 'identifier_mismatch'
+      || result.error === 'authenticator_mismatch'
+      || result.error === 'unknown_code';
+  }
+
   public async sendAccounting(request: RadiusAccountingRequest): Promise<RadiusResult> {
-    const host = this.getActiveHost();
     const timeoutMs = this.config.timeoutMs || 5000;
     const accountingPort = this.config.accountingPort || this.config.port || 1813;
+    const retryPolicy = this.getRetryPolicy();
+    const maxAttempts = Number.isFinite(retryPolicy.maxAttempts)
+      ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
+      : 1;
 
-    this.logger.debug("[radius-client] accounting start", {
-      host,
-      statusType: request.statusType,
-      sessionId: request.sessionId
-    });
+    let lastResult: RadiusResult = { ok: false, error: 'timeout' };
 
-    try {
-      const protocolOptions = {
-        secret: this.config.secret,
-        port: accountingPort,
-        accountingPort,
-        timeoutMs: timeoutMs
-      };
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const host = this.getActiveHost();
 
-      const result = await this.protocol.radiusAccounting(host, request, protocolOptions, this.logger);
+      this.logger.debug("[radius-client] accounting start", {
+        host,
+        statusType: request.statusType,
+        sessionId: request.sessionId,
+        attempt,
+        maxAttempts
+      });
 
-      if (!result.ok && result.error === "timeout") {
-        this.logger.warn("[radius-client] accounting timeout detected", {
+      try {
+        const protocolOptions = {
+          secret: this.config.secret,
+          port: accountingPort,
+          accountingPort,
+          timeoutMs: timeoutMs
+        };
+
+        const result = await this.protocol.radiusAccounting(host, request, protocolOptions, this.logger);
+        lastResult = result;
+
+        if (result.ok || !this.isRetryableAccountingFailure(result) || attempt >= maxAttempts) {
+          if (!result.ok && result.error === "timeout") {
+            this.logger.warn("[radius-client] accounting timeout detected", {
+              host,
+              statusType: request.statusType,
+              sessionId: request.sessionId,
+              attempt,
+              maxAttempts
+            });
+            this.onAccountingTimeout(request).catch((error: unknown) => {
+              this.logger.warn("[radius-client] onAccountingTimeout error", error);
+            });
+          }
+
+          return result;
+        }
+
+        this.logger.warn('[radius-client] accounting transport failure; trying in-call failover before retry', {
           host,
           statusType: request.statusType,
-          sessionId: request.sessionId
+          sessionId: request.sessionId,
+          attempt,
+          maxAttempts,
+          error: result.error
         });
-        this.onAccountingTimeout(request).catch((error: unknown) => {
-          this.logger.warn("[radius-client] onAccountingTimeout error", error);
-        });
-      }
 
-      return result;
-    } catch (e) {
-      this.logger.error("[radius-client] accounting exception", { error: e });
-      throw e;
+        await this.failover('accounting');
+
+        const retryDelayMs = this.getRetryDelayMs(attempt, retryPolicy);
+        if (retryDelayMs > 0) {
+          this.logger.debug('[radius-client] accounting waiting before retry', {
+            delayMs: retryDelayMs,
+            nextAttempt: attempt + 1,
+            maxAttempts
+          });
+          await Bun.sleep(retryDelayMs);
+        }
+      } catch (e) {
+        this.logger.error("[radius-client] accounting exception", { error: e });
+        throw e;
+      }
     }
+
+    return lastResult;
   }
 
   public accountingStart(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
@@ -269,82 +323,64 @@ export class RadiusClient {
     return this.sendAccounting({ ...request, statusType: "Stop" });
   }
 
-  public async sendCoa(request: RadiusCoaRequest): Promise<RadiusCoaResult> {
+  private async sendDynamicAuthorizationRequest(
+    mode: "coa" | "disconnect",
+    request: RadiusDynamicAuthorizationRequestBase,
+    protocolCall: (
+      host: string,
+      requestPayload: RadiusDynamicAuthorizationRequestBase,
+      protocolOptions: RadiusProtocolOptions,
+      logger: Logger
+    ) => Promise<RadiusDynamicAuthorizationResult>
+  ): Promise<RadiusDynamicAuthorizationResult> {
     const host = this.getActiveHost();
     const timeoutMs = this.config.timeoutMs || 5000;
     const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
 
-    this.logger.debug("[radius-client] coa start", {
+    this.logger.debug(`[radius-client] ${mode} start`, {
       host,
       username: request.username,
       sessionId: request.sessionId
     });
 
     try {
-      const protocolOptions = {
+      const protocolOptions: RadiusProtocolOptions = {
         secret: this.config.secret,
         port: dynamicAuthorizationPort,
         dynamicAuthorizationPort,
         timeoutMs
       };
 
-      const result = await this.protocol.radiusCoa(host, request, protocolOptions, this.logger);
+      const result = await protocolCall(host, request, protocolOptions, this.logger);
 
       if (!result.ok && result.error === "timeout") {
-        this.logger.warn("[radius-client] coa timeout detected", {
+        this.logger.warn(`[radius-client] ${mode} timeout detected`, {
           host,
           username: request.username,
           sessionId: request.sessionId
         });
-        this.onDynamicAuthorizationTimeout("coa").catch((error: unknown) => {
+        this.onDynamicAuthorizationTimeout(mode).catch((error: unknown) => {
           this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
         });
       }
 
       return result;
     } catch (e) {
-      this.logger.error("[radius-client] coa exception", { error: e });
+      this.logger.error(`[radius-client] ${mode} exception`, { error: e });
       throw e;
     }
   }
 
+  public async sendCoa(request: RadiusCoaRequest): Promise<RadiusCoaResult> {
+    return this.sendDynamicAuthorizationRequest("coa", request, (host, requestPayload, protocolOptions, logger) =>
+      this.protocol.radiusCoa(host, requestPayload, protocolOptions, logger)
+    );
+  }
+
   public async sendDisconnect(request: RadiusDisconnectRequest): Promise<RadiusDisconnectResult> {
-    const host = this.getActiveHost();
-    const timeoutMs = this.config.timeoutMs || 5000;
-    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
-
-    this.logger.debug("[radius-client] disconnect start", {
-      host,
-      username: request.username,
-      sessionId: request.sessionId
-    });
-
-    try {
-      const protocolOptions = {
-        secret: this.config.secret,
-        port: dynamicAuthorizationPort,
-        dynamicAuthorizationPort,
-        timeoutMs
-      };
-
-      const result = await this.protocol.radiusDisconnect(host, request, protocolOptions, this.logger);
-
-      if (!result.ok && result.error === "timeout") {
-        this.logger.warn("[radius-client] disconnect timeout detected", {
-          host,
-          username: request.username,
-          sessionId: request.sessionId
-        });
-        this.onDynamicAuthorizationTimeout("disconnect").catch((error: unknown) => {
-          this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
-        });
-      }
-
-      return result;
-    } catch (e) {
-      this.logger.error("[radius-client] disconnect exception", { error: e });
-      throw e;
-    }
+    return this.sendDynamicAuthorizationRequest("disconnect", request, (host, requestPayload, protocolOptions, logger) =>
+      this.protocol.radiusDisconnect(host, requestPayload, protocolOptions, logger)
+    );
   }
 
   // --- Internal Failover / Health Logic ---
@@ -397,8 +433,7 @@ export class RadiusClient {
   }
 
   private async fastFailoverSequence(): Promise<string | null> {
-    if (this.inProgress) return this.activeHost;
-    this.inProgress = true;
+    if (!this.acquireHealthOperationLock()) return this.activeHost;
     try {
       for (const host of this.hosts) {
         const ok = await this.probeHost(host);
@@ -410,7 +445,7 @@ export class RadiusClient {
       this.logger.warn('[radius-client] No RADIUS hosts responded during initial probe');
       return null;
     } finally {
-      this.inProgress = false;
+      this.releaseHealthOperationLock();
     }
   }
 
@@ -450,24 +485,19 @@ export class RadiusClient {
   }
 
   public async failover(probeType: ProbeMode = "auth"): Promise<string | null> {
-    let lockBusyAfterWait = this.inProgress;
-    if (lockBusyAfterWait) {
-      const deadline = Date.now() + 100;
-      while (Date.now() < deadline) {
-        await Bun.sleep(1);
-        lockBusyAfterWait = this.inProgress;
-        if (!lockBusyAfterWait) {
-          break;
-        }
+    if (this.inProgress) {
+      const releasedBeforeTimeout = await this.waitForHealthOperationRelease(100);
+      if (!releasedBeforeTimeout) {
+        this.logger.debug('[radius-client] failover skipped while another health operation is still in progress');
+        return null;
       }
     }
 
-    if (lockBusyAfterWait) {
+    if (!this.acquireHealthOperationLock()) {
       this.logger.debug('[radius-client] failover skipped while another health operation is still in progress');
       return null;
     }
 
-    this.inProgress = true;
     try {
       // Try next hosts in order starting after current active
       const startIndex = this.activeHost ? this.hosts.indexOf(this.activeHost) + 1 : 0;
@@ -488,7 +518,7 @@ export class RadiusClient {
       this.activeHost = null;
       return null;
     } finally {
-      this.inProgress = false;
+      this.releaseHealthOperationLock();
     }
   }
 
@@ -545,7 +575,7 @@ export class RadiusClient {
         const accountingPort = this.config.accountingPort || this.config.port || 1813;
         const accountingProbeRequest: RadiusAccountingRequest = {
           username: hcUser,
-          sessionId: `health-${String(Date.now())}`,
+          sessionId: this.createHealthProbeSessionId(),
           statusType: "Interim-Update"
         };
         const accountingOptions = {
@@ -637,6 +667,72 @@ export class RadiusClient {
     } catch (e) {
       return markUnhealthy(`exception:${(e as Error).message}`);
     }
+  }
+
+  private acquireHealthOperationLock(): boolean {
+    if (this.inProgress) {
+      return false;
+    }
+
+    this.inProgress = true;
+    return true;
+  }
+
+  private releaseHealthOperationLock(): void {
+    this.inProgress = false;
+    const waiters = this.inProgressWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter();
+    }
+  }
+
+  private async waitForHealthOperationRelease(timeoutMs: number): Promise<boolean> {
+    if (!this.inProgress) {
+      return true;
+    }
+
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const settle = (released: boolean): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+
+        const waiterIndex = this.inProgressWaiters.indexOf(onRelease);
+        if (waiterIndex >= 0) {
+          this.inProgressWaiters.splice(waiterIndex, 1);
+        }
+
+        resolve(released);
+      };
+
+      const onRelease = (): void => {
+        settle(true);
+      };
+
+      this.inProgressWaiters.push(onRelease);
+
+      if (!this.inProgress) {
+        settle(true);
+        return;
+      }
+
+      timer = setTimeout(() => {
+        settle(false);
+      }, timeoutMs);
+    });
+  }
+
+  private createHealthProbeSessionId(): string {
+    const timestamp = String(Date.now());
+    return `health-${timestamp}-${randomUUID()}`;
   }
 
   // Called when an authentication attempt times out to opportunistically verify active host

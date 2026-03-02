@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { RadiusClient } from '../src/client';
 import type {
+  Logger,
   RadiusAccountingRequest,
   RadiusCoaRequest,
   RadiusCoaResult,
@@ -32,6 +33,7 @@ let authCalls: {
   options: RadiusProtocolOptions;
   logger: unknown;
 }[] = [];
+let authDelayMsByHost: Map<string, number> = new Map();
 let statusCalls: {
   host: string;
   options: RadiusProtocolOptions;
@@ -43,6 +45,7 @@ let accountingCalls: {
   options: RadiusProtocolOptions;
   logger: unknown;
 }[] = [];
+let accountingResponseBySessionId: Map<string, RadiusResult[]> = new Map();
 let coaCalls: {
   host: string;
   request: RadiusCoaRequest;
@@ -65,6 +68,11 @@ const protocolMock = {
     logger?: unknown
   ): Promise<RadiusResult> => {
     authCalls.push({ host, username, password, options, logger });
+
+    const delayMs = authDelayMsByHost.get(host) ?? 0;
+    if (delayMs > 0) {
+      await Bun.sleep(delayMs);
+    }
 
     if (rejectingHosts.has(host)) {
       // Simulate Access-Reject (server alive but auth failed)
@@ -100,6 +108,14 @@ const protocolMock = {
     logger?: unknown
   ): Promise<RadiusResult> => {
     accountingCalls.push({ host, request, options, logger });
+
+    const scriptedResponses = accountingResponseBySessionId.get(request.sessionId);
+    if (scriptedResponses && scriptedResponses.length > 0) {
+      const scriptedResponse = scriptedResponses.shift();
+      if (scriptedResponse) {
+        return scriptedResponse;
+      }
+    }
 
     if (!responsiveAccountingHosts.has(host)) {
       return { ok: false, error: 'timeout' };
@@ -181,6 +197,30 @@ describe('RadiusClient Failover', () => {
     }
   };
 
+  const createInMemoryLogger = (): {
+    logger: Logger;
+    debugEntries: Array<{ message: string; args: unknown[] }>;
+  } => {
+    const debugEntries: Array<{ message: string; args: unknown[] }> = [];
+
+    const logger: Logger = {
+      debug(message: string, ...args: unknown[]): void {
+        debugEntries.push({ message, args });
+      },
+      info(): void {
+        // Intentionally no-op for tests.
+      },
+      warn(): void {
+        // Intentionally no-op for tests.
+      },
+      error(): void {
+        // Intentionally no-op for tests.
+      }
+    };
+
+    return { logger, debugEntries };
+  };
+
   beforeEach(() => {
     responsiveHosts = new Set(['10.0.0.1']);
     rejectingHosts = new Set();
@@ -190,8 +230,10 @@ describe('RadiusClient Failover', () => {
     responsiveCoaHosts = new Set(['10.0.0.1']);
     responsiveDisconnectHosts = new Set(['10.0.0.1']);
     authCalls = [];
+    authDelayMsByHost = new Map();
     statusCalls = [];
     accountingCalls = [];
+    accountingResponseBySessionId = new Map();
     coaCalls = [];
     disconnectCalls = [];
 
@@ -288,6 +330,28 @@ describe('RadiusClient Failover', () => {
     });
 
     expect(userCall.logger).toBeDefined();
+  });
+
+  test('authenticate logging avoids emitting raw username PII', async () => {
+    const { logger, debugEntries } = createInMemoryLogger();
+    const loggingClient = new RadiusClient(config, logger, { protocol: protocolMock });
+
+    try {
+      const username = 'sensitive.user@example.com';
+      const result = await loggingClient.authenticate(username, 'hunter2');
+      expect(result.ok).toBe(true);
+
+      const authenticateStartLog = debugEntries.find(
+        (entry) => entry.message === '[radius-client] authenticate start'
+      );
+
+      expect(authenticateStartLog).toBeDefined();
+
+      const serializedMetadata = JSON.stringify(authenticateStartLog?.args ?? []);
+      expect(serializedMetadata).not.toContain(username);
+    } finally {
+      loggingClient.shutdown();
+    }
   });
 
   test('failover activates next responsive host when current fails', async () => {
@@ -427,38 +491,55 @@ describe('RadiusClient Failover', () => {
     retryClient.shutdown();
   });
 
-  test('failover returns null when another health operation stays in progress', async () => {
+  test('failover returns null when another health operation exceeds the wait window', async () => {
     responsiveHosts = new Set(['10.0.0.2']);
     authCalls = [];
-    (client as unknown as { inProgress: boolean }).inProgress = true;
+    authDelayMsByHost = new Map([['10.0.0.2', 250]]);
+
+    const firstFailover = client.failover();
+
+    await waitForCondition(
+      () => authCalls.some((call) => call.username === config.healthCheckUser && call.host === '10.0.0.2'),
+      100,
+      'Expected first failover to begin probing 10.0.0.2'
+    );
 
     const failoverResult = await client.failover();
+    const firstFailoverResult = await firstFailover;
 
     const healthProbeCalls = authCalls.filter((call) => call.username === config.healthCheckUser);
 
     expect(failoverResult).toBeNull();
-    expect(healthProbeCalls).toHaveLength(0);
-
-    (client as unknown as { inProgress: boolean }).inProgress = false;
+    expect(firstFailoverResult).toBe('10.0.0.2');
+    expect(healthProbeCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   test('failover waits for in-progress operation to complete and then proceeds', async () => {
-    responsiveHosts = new Set(['10.0.0.2']);
+    responsiveHosts = new Set();
     authCalls = [];
-    (client as unknown as { inProgress: boolean }).inProgress = true;
+    authDelayMsByHost = new Map([['10.0.0.2', 30]]);
 
-    const unlockTimer = setTimeout(() => {
-      (client as unknown as { inProgress: boolean }).inProgress = false;
-    }, 20);
+    const firstFailover = client.failover();
+
+    await waitForCondition(
+      () => authCalls.some((call) => call.username === config.healthCheckUser && call.host === '10.0.0.2'),
+      100,
+      'Expected first failover to begin probing 10.0.0.2'
+    );
+
+    const makeHostResponsiveTimer = setTimeout(() => {
+      responsiveHosts = new Set(['10.0.0.2']);
+    }, 40);
 
     try {
       const failoverResult = await client.failover();
+      const firstFailoverResult = await firstFailover;
 
+      expect(firstFailoverResult).toBeNull();
       expect(failoverResult).toBe('10.0.0.2');
       expect(client.getActiveHost()).toBe('10.0.0.2');
     } finally {
-      clearTimeout(unlockTimer);
-      (client as unknown as { inProgress: boolean }).inProgress = false;
+      clearTimeout(makeHostResponsiveTimer);
     }
   });
 
@@ -506,6 +587,8 @@ describe('RadiusClient Failover', () => {
     responsiveHosts = new Set();
     authCalls = [];
 
+    // Intentionally make the host responsive shortly after the first call.
+    // If a regression causes extra attempts, this would flip the outcome and expose it.
     const makeHostResponsiveTimer = setTimeout(() => {
       responsiveHosts = new Set(['10.0.0.1']);
     }, 5);
@@ -808,6 +891,124 @@ describe('RadiusClient Failover', () => {
       port: 1813,
       timeoutMs: 100
     });
+  });
+
+  test('accounting probe session IDs are collision-safe and retain health- prefix', async () => {
+    const originalDateNow = Date.now;
+    Date.now = () => 1717171717171;
+
+    responsiveAccountingHosts = new Set(['10.0.0.3']);
+    accountingCalls = [];
+
+    try {
+      const failoverResult = await client.failover('accounting');
+      expect(failoverResult).toBe('10.0.0.3');
+
+      const accountingProbeSessionIds = accountingCalls
+        .filter((call) => call.request.username === config.healthCheckUser)
+        .map((call) => call.request.sessionId);
+
+      expect(accountingProbeSessionIds.length).toBeGreaterThanOrEqual(2);
+      expect(accountingProbeSessionIds.every((sessionId) => sessionId.startsWith('health-'))).toBe(true);
+      expect(new Set(accountingProbeSessionIds).size).toBe(accountingProbeSessionIds.length);
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  test('sendAccounting retries transient timeout failures with backoff and can recover', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 3,
+        initialDelayMs: 25,
+        backoffMultiplier: 2,
+        maxDelayMs: 1000,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    const timeoutHookRequests: RadiusAccountingRequest[] = [];
+    (retryClient as unknown as {
+      onAccountingTimeout: (request: RadiusAccountingRequest) => Promise<void>;
+    }).onAccountingTimeout = async (request: RadiusAccountingRequest): Promise<void> => {
+      timeoutHookRequests.push(request);
+    };
+
+    accountingCalls = [];
+    accountingResponseBySessionId = new Map([
+      ['accounting-retry-success', [
+        { ok: false, error: 'timeout' },
+        { ok: true }
+      ]]
+    ]);
+
+    const startedAt = Date.now();
+    const result = await retryClient.sendAccounting({
+      username: 'alice',
+      sessionId: 'accounting-retry-success',
+      statusType: 'Start'
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    const userCalls = accountingCalls.filter((call) => call.request.sessionId === 'accounting-retry-success');
+
+    expect(result.ok).toBe(true);
+    expect(userCalls).toHaveLength(2);
+    expect(elapsedMs).toBeGreaterThanOrEqual(25);
+    expect(timeoutHookRequests).toHaveLength(0);
+
+    retryClient.shutdown();
+  });
+
+  test('sendAccounting invokes timeout handling only after final timeout attempt', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 3,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    const timeoutHookRequests: RadiusAccountingRequest[] = [];
+    (retryClient as unknown as {
+      onAccountingTimeout: (request: RadiusAccountingRequest) => Promise<void>;
+    }).onAccountingTimeout = async (request: RadiusAccountingRequest): Promise<void> => {
+      timeoutHookRequests.push(request);
+    };
+
+    accountingCalls = [];
+    accountingResponseBySessionId = new Map([
+      ['accounting-final-timeout', [
+        { ok: false, error: 'timeout' },
+        { ok: false, error: 'timeout' },
+        { ok: false, error: 'timeout' }
+      ]]
+    ]);
+
+    const result = await retryClient.sendAccounting({
+      username: 'alice',
+      sessionId: 'accounting-final-timeout',
+      statusType: 'Start'
+    });
+
+    const userCalls = accountingCalls.filter((call) => call.request.sessionId === 'accounting-final-timeout');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+    expect(userCalls).toHaveLength(3);
+    expect(timeoutHookRequests).toHaveLength(1);
+    expect(timeoutHookRequests[0]?.sessionId).toBe('accounting-final-timeout');
+    expect(timeoutHookRequests[0]?.statusType).toBe('Start');
+
+    retryClient.shutdown();
   });
 
   test('sendAccounting timeout triggers failover when auth path is healthy but accounting path is unhealthy', async () => {
