@@ -46,6 +46,8 @@ let accountingCalls: {
   logger: unknown;
 }[] = [];
 let accountingResponseBySessionId: Map<string, RadiusResult[]> = new Map();
+let coaResponseBySessionId: Map<string, RadiusCoaResult[]> = new Map();
+let disconnectResponseBySessionId: Map<string, RadiusDisconnectResult[]> = new Map();
 let coaCalls: {
   host: string;
   request: RadiusCoaRequest;
@@ -131,6 +133,16 @@ const protocolMock = {
   ): Promise<RadiusCoaResult> => {
     coaCalls.push({ host, request, options, logger });
 
+    const scriptedResponses = request.sessionId
+      ? coaResponseBySessionId.get(request.sessionId)
+      : undefined;
+    if (scriptedResponses && scriptedResponses.length > 0) {
+      const scriptedResponse = scriptedResponses.shift();
+      if (scriptedResponse) {
+        return scriptedResponse;
+      }
+    }
+
     if (!responsiveCoaHosts.has(host)) {
       return { ok: false, acknowledged: false, error: 'timeout' };
     }
@@ -144,6 +156,16 @@ const protocolMock = {
     logger?: unknown
   ): Promise<RadiusDisconnectResult> => {
     disconnectCalls.push({ host, request, options, logger });
+
+    const scriptedResponses = request.sessionId
+      ? disconnectResponseBySessionId.get(request.sessionId)
+      : undefined;
+    if (scriptedResponses && scriptedResponses.length > 0) {
+      const scriptedResponse = scriptedResponses.shift();
+      if (scriptedResponse) {
+        return scriptedResponse;
+      }
+    }
 
     if (!responsiveDisconnectHosts.has(host)) {
       return { ok: false, acknowledged: false, error: 'timeout' };
@@ -234,6 +256,8 @@ describe('RadiusClient Failover', () => {
     statusCalls = [];
     accountingCalls = [];
     accountingResponseBySessionId = new Map();
+    coaResponseBySessionId = new Map();
+    disconnectResponseBySessionId = new Map();
     coaCalls = [];
     disconnectCalls = [];
 
@@ -1016,6 +1040,140 @@ describe('RadiusClient Failover', () => {
       Math.max(healthTimeoutMs * 3, 250),
       'Expected active host to fail over to 10.0.0.2 after Disconnect timeout'
     );
+  });
+
+  test('sendCoa retries transient timeout failures with backoff and can recover', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 25,
+        backoffMultiplier: 1,
+        maxDelayMs: 1000,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    const timeoutHookModes: Array<'coa' | 'disconnect'> = [];
+    (retryClient as unknown as {
+      onDynamicAuthorizationTimeout: (mode: 'coa' | 'disconnect') => Promise<void>;
+    }).onDynamicAuthorizationTimeout = async (mode: 'coa' | 'disconnect'): Promise<void> => {
+      timeoutHookModes.push(mode);
+    };
+
+    responsiveCoaHosts = new Set(['10.0.0.2']);
+    coaCalls = [];
+
+    const startedAt = Date.now();
+    const result = await retryClient.sendCoa({
+      username: 'alice',
+      sessionId: 'coa-retry-success'
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    const userCalls = coaCalls
+      .filter((call) => call.request.sessionId === 'coa-retry-success')
+      .map((call) => call.host);
+
+    expect(result.ok).toBe(true);
+    expect(userCalls).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(elapsedMs).toBeGreaterThanOrEqual(25);
+    expect(timeoutHookModes).toHaveLength(0);
+    expect(retryClient.getActiveHost()).toBe('10.0.0.2');
+
+    retryClient.shutdown();
+  });
+
+  test('sendDisconnect does not retry terminal NAK responses', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 3,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    const timeoutHookModes: Array<'coa' | 'disconnect'> = [];
+    (retryClient as unknown as {
+      onDynamicAuthorizationTimeout: (mode: 'coa' | 'disconnect') => Promise<void>;
+    }).onDynamicAuthorizationTimeout = async (mode: 'coa' | 'disconnect'): Promise<void> => {
+      timeoutHookModes.push(mode);
+    };
+
+    disconnectCalls = [];
+    disconnectResponseBySessionId = new Map([
+      ['disconnect-terminal-nak', [
+        { ok: false, acknowledged: false, error: 'disconnect_nak', errorCause: 401 }
+      ]]
+    ]);
+
+    const result = await retryClient.sendDisconnect({
+      username: 'alice',
+      sessionId: 'disconnect-terminal-nak'
+    });
+
+    const userCalls = disconnectCalls.filter((call) => call.request.sessionId === 'disconnect-terminal-nak');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('disconnect_nak');
+    expect(userCalls).toHaveLength(1);
+    expect(userCalls[0]?.host).toBe('10.0.0.1');
+    expect(timeoutHookModes).toHaveLength(0);
+    expect(retryClient.getActiveHost()).toBe('10.0.0.1');
+
+    retryClient.shutdown();
+  });
+
+  test('sendCoa invokes timeout handling only after final timeout attempt', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 3,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    const timeoutHookModes: Array<'coa' | 'disconnect'> = [];
+    (retryClient as unknown as {
+      onDynamicAuthorizationTimeout: (mode: 'coa' | 'disconnect') => Promise<void>;
+    }).onDynamicAuthorizationTimeout = async (mode: 'coa' | 'disconnect'): Promise<void> => {
+      timeoutHookModes.push(mode);
+    };
+
+    coaCalls = [];
+    coaResponseBySessionId = new Map([
+      ['coa-final-timeout', [
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: false, acknowledged: false, error: 'timeout' }
+      ]]
+    ]);
+
+    const result = await retryClient.sendCoa({
+      username: 'alice',
+      sessionId: 'coa-final-timeout'
+    });
+
+    const userCalls = coaCalls.filter((call) => call.request.sessionId === 'coa-final-timeout');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+    expect(userCalls).toHaveLength(3);
+    expect(timeoutHookModes).toEqual(['coa']);
+
+    retryClient.shutdown();
   });
 
   test('accountingStart/accountingInterim/accountingStop send typed status values', async () => {

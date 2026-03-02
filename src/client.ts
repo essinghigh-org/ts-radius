@@ -234,6 +234,16 @@ export class RadiusClient {
       || result.error === 'unknown_code';
   }
 
+  private isRetryableDynamicAuthorizationFailure(result: RadiusDynamicAuthorizationResult): boolean {
+    if (result.ok) return false;
+
+    return result.error === 'timeout'
+      || result.error === 'malformed_response'
+      || result.error === 'identifier_mismatch'
+      || result.error === 'authenticator_mismatch'
+      || result.error === 'unknown_code';
+  }
+
   public async sendAccounting(request: RadiusAccountingRequest): Promise<RadiusResult> {
     const timeoutMs = this.config.timeoutMs || 5000;
     const accountingPort = this.config.accountingPort || this.config.port || 1813;
@@ -337,45 +347,89 @@ export class RadiusClient {
       logger: Logger
     ) => Promise<RadiusDynamicAuthorizationResult>
   ): Promise<RadiusDynamicAuthorizationResult> {
-    const host = this.getActiveHost();
     const timeoutMs = this.config.timeoutMs || 5000;
     const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
 
-    this.logger.debug(`[radius-client] ${mode} start`, {
-      host,
-      username: request.username,
-      sessionId: request.sessionId
-    });
+    const retryPolicy = this.getRetryPolicy();
+    const maxAttempts = Number.isFinite(retryPolicy.maxAttempts)
+      ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
+      : 1;
 
-    try {
-      const protocolOptions: RadiusProtocolOptions = {
-        secret: this.config.secret,
-        port: dynamicAuthorizationPort,
-        dynamicAuthorizationPort,
-        timeoutMs,
-        validateResponseSource: this.config.validateResponseSource,
-        responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
-        responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
-      };
+    let lastResult: RadiusDynamicAuthorizationResult = {
+      ok: false,
+      acknowledged: false,
+      error: "timeout"
+    };
 
-      const result = await protocolCall(host, request, protocolOptions, this.logger);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const host = this.getActiveHost();
 
-      if (!result.ok && result.error === "timeout") {
-        this.logger.warn(`[radius-client] ${mode} timeout detected`, {
+      this.logger.debug(`[radius-client] ${mode} start`, {
+        host,
+        username: request.username,
+        sessionId: request.sessionId,
+        attempt,
+        maxAttempts
+      });
+
+      try {
+        const protocolOptions: RadiusProtocolOptions = {
+          secret: this.config.secret,
+          port: dynamicAuthorizationPort,
+          dynamicAuthorizationPort,
+          timeoutMs,
+          validateResponseSource: this.config.validateResponseSource,
+          responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
+          responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
+        };
+
+        const result = await protocolCall(host, request, protocolOptions, this.logger);
+        lastResult = result;
+
+        if (result.ok || !this.isRetryableDynamicAuthorizationFailure(result) || attempt >= maxAttempts) {
+          if (!result.ok && result.error === "timeout") {
+            this.logger.warn(`[radius-client] ${mode} timeout detected`, {
+              host,
+              username: request.username,
+              sessionId: request.sessionId,
+              attempt,
+              maxAttempts
+            });
+            this.onDynamicAuthorizationTimeout(mode).catch((error: unknown) => {
+              this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
+            });
+          }
+
+          return result;
+        }
+
+        this.logger.warn(`[radius-client] ${mode} transport failure; trying in-call failover before retry`, {
           host,
           username: request.username,
-          sessionId: request.sessionId
+          sessionId: request.sessionId,
+          attempt,
+          maxAttempts,
+          error: result.error
         });
-        this.onDynamicAuthorizationTimeout(mode).catch((error: unknown) => {
-          this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
-        });
-      }
 
-      return result;
-    } catch (e) {
-      this.logger.error(`[radius-client] ${mode} exception`, { error: e });
-      throw e;
+        await this.failover(mode);
+
+        const retryDelayMs = this.getRetryDelayMs(attempt, retryPolicy);
+        if (retryDelayMs > 0) {
+          this.logger.debug(`[radius-client] ${mode} waiting before retry`, {
+            delayMs: retryDelayMs,
+            nextAttempt: attempt + 1,
+            maxAttempts
+          });
+          await Bun.sleep(retryDelayMs);
+        }
+      } catch (e) {
+        this.logger.error(`[radius-client] ${mode} exception`, { error: e });
+        throw e;
+      }
     }
+
+    return lastResult;
   }
 
   public async sendCoa(request: RadiusCoaRequest): Promise<RadiusCoaResult> {
