@@ -88,6 +88,12 @@ try {
 }
 ```
 
+`radiusStatusServerProbe` is part of the public root export for direct probe calls:
+
+```typescript
+import { radiusStatusServerProbe } from "ts-radius-client";
+```
+
 ## Configuration (`RadiusConfig`)
 
 | Option | Type | Default | Description |
