@@ -2047,7 +2047,7 @@ describe('RadiusClient Failover', () => {
     probeClient.shutdown();
   });
 
-  test('accounting timeout probe omits responseLengthValidationPolicy forwarding and keeps strict defaults', async () => {
+  test('accounting timeout probe explicitly sets strict responseLengthValidationPolicy', async () => {
     const probeClient = new RadiusClient({
       ...config,
       healthCheckIntervalMs: 60000,
@@ -2074,10 +2074,10 @@ describe('RadiusClient Failover', () => {
     expect(accountingProbeCall).toBeDefined();
 
     if (!accountingProbeCall) {
-      throw new Error('Expected accounting timeout probe call to validate response length policy forwarding semantics');
+      throw new Error('Expected accounting timeout probe call to validate strict response length policy behavior');
     }
 
-    expect(Object.prototype.hasOwnProperty.call(accountingProbeCall.options, 'responseLengthValidationPolicy')).toBe(false);
+    expect(accountingProbeCall.options.responseLengthValidationPolicy).toBe('strict');
 
     probeClient.shutdown();
   });

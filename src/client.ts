@@ -700,11 +700,12 @@ export class RadiusClient {
           sessionId: this.createHealthProbeSessionId(),
           statusType: "Interim-Update"
         };
-        const accountingOptions = {
+        const accountingOptions: RadiusProtocolOptions = {
           secret: this.config.secret,
           port: accountingPort,
           accountingPort,
-          timeoutMs
+          timeoutMs,
+          responseLengthValidationPolicy: "strict"
         };
 
         const accountingRes = await this.protocol.radiusAccounting(
