@@ -919,6 +919,39 @@ describe('RadiusClient Failover', () => {
     statusClient.shutdown();
   });
 
+  test('status-server auth fallback forwards validateResponseSource from config', async () => {
+    const statusClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      healthCheckProbeMode: 'status-server',
+      validateResponseSource: false
+    }, undefined, { protocol: protocolMock });
+
+    statusResponsiveHosts = new Set();
+    statusUnsupportedHosts = new Set(['10.0.0.2']);
+    responsiveHosts = new Set(['10.0.0.2']);
+    authCalls = [];
+    statusCalls = [];
+
+    const newHost = await statusClient.failover();
+
+    expect(newHost).toBe('10.0.0.2');
+    expect(statusCalls.some((call) => call.host === '10.0.0.2')).toBe(true);
+
+    const fallbackAuthProbe = authCalls.find(
+      (call) => call.host === '10.0.0.2' && call.username === config.healthCheckUser
+    );
+    expect(fallbackAuthProbe).toBeDefined();
+
+    if (!fallbackAuthProbe) {
+      throw new Error('Expected fallback auth probe to verify validateResponseSource forwarding');
+    }
+
+    expect(fallbackAuthProbe.options.validateResponseSource).toBe(false);
+
+    statusClient.shutdown();
+  });
+
   test('status-server auth fallback forwards CHAP health probe options when configured', async () => {
     const chapChallenge = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
     const statusClient = new RadiusClient({
@@ -1122,6 +1155,49 @@ describe('RadiusClient Failover', () => {
       Math.max(healthTimeoutMs * 3, 250),
       'Expected active host to fail over to 10.0.0.2 after Disconnect timeout'
     );
+  });
+
+  test('dynamic-authorization timeout probes omit validateResponseSource forwarding', async () => {
+    const probeClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      validateResponseSource: false
+    }, undefined, { protocol: protocolMock });
+
+    const internals = probeClient as unknown as {
+      activeHost: string | null;
+      onDynamicAuthorizationTimeout: (mode: 'coa' | 'disconnect') => Promise<void>;
+    };
+
+    internals.activeHost = '10.0.0.1';
+
+    responsiveCoaHosts = new Set(['10.0.0.1']);
+    responsiveDisconnectHosts = new Set(['10.0.0.1']);
+    coaCalls = [];
+    disconnectCalls = [];
+
+    await internals.onDynamicAuthorizationTimeout('coa');
+    await internals.onDynamicAuthorizationTimeout('disconnect');
+
+    const coaProbeCall = coaCalls.find((call) => call.request.username === config.healthCheckUser);
+    expect(coaProbeCall).toBeDefined();
+
+    if (!coaProbeCall) {
+      throw new Error('Expected CoA timeout probe call to validate option forwarding semantics');
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(coaProbeCall.options, 'validateResponseSource')).toBe(false);
+
+    const disconnectProbeCall = disconnectCalls.find((call) => call.request.username === config.healthCheckUser);
+    expect(disconnectProbeCall).toBeDefined();
+
+    if (!disconnectProbeCall) {
+      throw new Error('Expected Disconnect timeout probe call to validate option forwarding semantics');
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(disconnectProbeCall.options, 'validateResponseSource')).toBe(false);
+
+    probeClient.shutdown();
   });
 
   test('sendCoa retries transient timeout failures with backoff and can recover', async () => {
@@ -1627,5 +1703,40 @@ describe('RadiusClient Failover', () => {
       Math.max(healthTimeoutMs * 3, 250),
       'Expected active host to fail over to 10.0.0.2 after accounting timeout'
     );
+  });
+
+  test('accounting timeout probe omits validateResponseSource forwarding', async () => {
+    const probeClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      validateResponseSource: false
+    }, undefined, { protocol: protocolMock });
+
+    const internals = probeClient as unknown as {
+      activeHost: string | null;
+      onAccountingTimeout: (request: RadiusAccountingRequest) => Promise<void>;
+    };
+
+    internals.activeHost = '10.0.0.1';
+
+    responsiveAccountingHosts = new Set(['10.0.0.1']);
+    accountingCalls = [];
+
+    await internals.onAccountingTimeout({
+      username: 'alice',
+      sessionId: 'accounting-timeout-omission',
+      statusType: 'Interim-Update'
+    });
+
+    const accountingProbeCall = accountingCalls.find((call) => call.request.username === config.healthCheckUser);
+    expect(accountingProbeCall).toBeDefined();
+
+    if (!accountingProbeCall) {
+      throw new Error('Expected accounting timeout probe call to validate option forwarding semantics');
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(accountingProbeCall.options, 'validateResponseSource')).toBe(false);
+
+    probeClient.shutdown();
   });
 });
