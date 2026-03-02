@@ -106,6 +106,12 @@ export interface RadiusDynamicAuthorizationRequestIdentity {
   /** RFC5176 packet Identifier (1 octet). */
   identifier: number;
   /**
+   * Optional fixed UDP source port for CoA/Disconnect sends.
+   * When omitted and an identity object is reused by caller code,
+   * implementations may resolve and persist an ephemeral source port.
+   */
+  sourcePort?: number;
+  /**
    * Optional RFC5176 packet Request Authenticator (16 octets) override.
    * When omitted, the protocol layer computes the accounting-style
    * Request Authenticator per RFC2866/RFC5176.
@@ -188,6 +194,7 @@ export interface RadiusProtocolOptions {
   /**
    * Optional request identity override for CoA/Disconnect packets.
     * `identifier` is always used verbatim.
+    * `sourcePort`, when provided, binds the local UDP source port.
     * `requestAuthenticator`, when provided, is used verbatim and must be 16 bytes.
     * If omitted, the protocol layer computes the accounting-style Request
     * Authenticator for the packet.
@@ -309,7 +316,7 @@ export interface RadiusConfig extends RadiusProtocolOptions {
    * - per_attempt (default): each retry attempt uses a new packet identifier,
    *   producing a new computed accounting-style Request Authenticator.
    * - stable: retries to the same host reuse one identifier;
-   *   failover to a different host uses a new identifier.
+   *   failover to a different host uses a new identity (identifier/sourcePort).
    *   Request Authenticator is still computed by the protocol layer per packet.
    */
   dynamicAuthorizationRetryIdentityMode?: DynamicAuthorizationRetryIdentityMode;
