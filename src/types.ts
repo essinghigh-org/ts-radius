@@ -79,6 +79,25 @@ export interface RadiusDynamicAuthorizationRequestBase {
 export type RadiusCoaRequest = RadiusDynamicAuthorizationRequestBase;
 export type RadiusDisconnectRequest = RadiusDynamicAuthorizationRequestBase;
 
+export type RadiusErrorCauseSymbol =
+  | "residual_session_context_removed"
+  | "invalid_eap_packet"
+  | "unsupported_attribute"
+  | "missing_attribute"
+  | "nas_identification_mismatch"
+  | "invalid_request"
+  | "unsupported_service"
+  | "unsupported_extension"
+  | "invalid_attribute_value"
+  | "administratively_prohibited"
+  | "request_not_routable"
+  | "session_context_not_found"
+  | "session_context_not_removable"
+  | "other_proxy_processing_error"
+  | "resources_unavailable"
+  | "request_initiated"
+  | "multiple_session_selection_unsupported";
+
 export interface RadiusDynamicAuthorizationResult {
   ok: boolean;
   acknowledged: boolean;
@@ -86,6 +105,8 @@ export interface RadiusDynamicAuthorizationResult {
   raw?: string;
   error?: string;
   errorCause?: number;
+  /** RFC5176 symbolic mapping for known Error-Cause codes; undefined for unknown/absent codes. */
+  errorCauseSymbol?: RadiusErrorCauseSymbol;
 }
 
 export type RadiusCoaResult = RadiusDynamicAuthorizationResult;

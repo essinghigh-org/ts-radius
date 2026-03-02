@@ -196,6 +196,7 @@ describe("CoA/Disconnect protocol", () => {
       expect(result.acknowledged).toBe(false);
       expect(result.error).toBe("coa_nak");
       expect(result.errorCause).toBe(503);
+      expect(result.errorCauseSymbol).toBe("session_context_not_found");
       expect(result.attributes?.find((attribute) => attribute.id === 101)?.value).toBe(503);
     } finally {
       await closeSocket(server);
@@ -272,7 +273,42 @@ describe("CoA/Disconnect protocol", () => {
       expect(result.acknowledged).toBe(false);
       expect(result.error).toBe("disconnect_nak");
       expect(result.errorCause).toBe(504);
+      expect(result.errorCauseSymbol).toBe("session_context_not_removable");
       expect(result.attributes?.find((attribute) => attribute.id === 101)?.value).toBe(504);
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("keeps unknown Error-Cause numeric and leaves symbol undefined", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 45, [
+        encodeIntegerAttribute(101, 3999)
+      ]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-unknown-error-cause"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("coa_nak");
+      expect(result.errorCause).toBe(3999);
+      expect(result.errorCauseSymbol).toBeUndefined();
     } finally {
       await closeSocket(server);
     }
