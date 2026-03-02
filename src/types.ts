@@ -27,6 +27,21 @@ export interface ParsedAttribute {
   raw: string; // Hex string of value for reference
 }
 
+export interface ExtendedAttributeValue {
+  format: "extended" | "long-extended";
+  extendedType: number;
+  data: string;
+  flags?: number;
+  hasMore?: boolean;
+  malformed?: boolean;
+  reason?: string;
+}
+
+export interface ExtendedRadiusAttribute extends ParsedAttribute {
+  id: 241 | 242 | 243 | 244 | 245 | 246;
+  value: ExtendedAttributeValue;
+}
+
 export interface VendorSpecificAttribute {
   id: 26;
   name: "Vendor-Specific";
@@ -35,7 +50,7 @@ export interface VendorSpecificAttribute {
   raw: string;
 }
 
-export type ParsedRadiusAttribute = ParsedAttribute | VendorSpecificAttribute;
+export type ParsedRadiusAttribute = ParsedAttribute | ExtendedRadiusAttribute | VendorSpecificAttribute;
 
 export interface RadiusResult {
   ok: boolean;

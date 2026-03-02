@@ -119,4 +119,87 @@ describe('Attribute Decoding', () => {
      expect(result.vendorId).toBe(9);
      expect(typeof result.value).toBe('string');
   });
+
+  test('decodes RFC6929 extended attributes with structured metadata', () => {
+    const value = Buffer.from([0x01, 0xde, 0xad, 0xbe, 0xef]);
+    const result = decodeAttribute(241, value);
+
+    expect(result).toEqual({
+      id: 241,
+      name: 'Extended-Attribute-241',
+      value: {
+        format: 'extended',
+        extendedType: 1,
+        data: 'deadbeef'
+      },
+      raw: '01deadbeef'
+    });
+  });
+
+  test('decodes RFC6929 long-extended attributes with continuation flags', () => {
+    const value = Buffer.from([0x09, 0x80, 0xca, 0xfe, 0xba, 0xbe]);
+    const result = decodeAttribute(245, value);
+
+    expect(result).toEqual({
+      id: 245,
+      name: 'Long-Extended-Attribute-245',
+      value: {
+        format: 'long-extended',
+        extendedType: 9,
+        flags: 0x80,
+        hasMore: true,
+        data: 'cafebabe'
+      },
+      raw: '0980cafebabe'
+    });
+  });
+
+  test('handles malformed RFC6929 extended attributes without throwing', () => {
+    const result = decodeAttribute(241, Buffer.alloc(0));
+
+    expect(result).toEqual({
+      id: 241,
+      name: 'Extended-Attribute-241',
+      value: {
+        format: 'extended',
+        extendedType: 0,
+        data: '',
+        malformed: true,
+        reason: 'missing_extended_type'
+      },
+      raw: ''
+    });
+  });
+
+  test('handles malformed RFC6929 long-extended attributes without throwing', () => {
+    const result = decodeAttribute(245, Buffer.from([0x0f]));
+
+    expect(result).toEqual({
+      id: 245,
+      name: 'Long-Extended-Attribute-245',
+      value: {
+        format: 'long-extended',
+        extendedType: 15,
+        flags: 0,
+        hasMore: false,
+        data: '',
+        malformed: true,
+        reason: 'missing_long_extended_flags'
+      },
+      raw: '0f'
+    });
+  });
+
+  test('preserves raw bytes to keep extended decoding roundtrip-friendly', () => {
+    const value = Buffer.from([0x02, 0x01, 0x23, 0x45, 0x67]);
+    const result = decodeAttribute(242, value);
+
+    expect(result.raw).toBe(value.toString('hex'));
+
+    if (typeof result.value !== 'object' || result.value === null || !('data' in result.value)) {
+      throw new Error('Expected extended attribute value metadata');
+    }
+
+    expect(result.value.data).toBe(value.subarray(1).toString('hex'));
+  });
 });
