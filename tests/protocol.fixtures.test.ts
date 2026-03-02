@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
     assertHexPatternMatch,
@@ -7,6 +10,22 @@ import {
     loadRadiusPacketFixture,
 } from "./helpers/packet-fixtures";
 import type { RadiusPacketFixture } from "./helpers/packet-fixtures";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FIXTURES_ROOT = path.resolve(__dirname, "fixtures");
+
+function discoverPacketFixturePaths(relativeDirectory: string): string[] {
+    const absoluteDirectory = path.resolve(FIXTURES_ROOT, relativeDirectory);
+    const entries = readdirSync(absoluteDirectory, { withFileTypes: true });
+
+    return entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => path.posix.join(relativeDirectory, entry.name))
+        .sort((a, b) => a.localeCompare(b));
+}
+
+const RFC2869_PACKET_FIXTURES = discoverPacketFixturePaths("protocol/rfc2869/packets");
 
 function createVendorSpecificFixture(decodedValue: unknown): RadiusPacketFixture {
     return {
@@ -32,6 +51,29 @@ function createVendorSpecificFixture(decodedValue: unknown): RadiusPacketFixture
 }
 
 describe("Protocol fixture infrastructure", () => {
+    test("discovers all expected RFC2869 packet fixtures", () => {
+        expect(RFC2869_PACKET_FIXTURES).toEqual([
+            "protocol/rfc2869/packets/access-request.eap-message.json",
+            "protocol/rfc2869/packets/access-request.message-authenticator.json",
+            "protocol/rfc2869/packets/accounting-request.acct-interim-interval.json",
+            "protocol/rfc2869/packets/accounting-request.event-timestamp.json",
+        ]);
+    });
+
+    for (const fixturePath of RFC2869_PACKET_FIXTURES) {
+        test(`decodes RFC2869 fixture deterministically: ${fixturePath}`, () => {
+            const fixture = loadRadiusPacketFixture(fixturePath);
+            const packet = hexToBuffer(fixture.packetHex);
+
+            assertHexPatternMatch(packet, fixture.packetHex);
+            const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+
+            expect(decodedPacket.code).toBe(fixture.expected.code);
+            expect(decodedPacket.identifier).toBe(fixture.expected.identifier);
+            expect(decodedPacket.attributes).toHaveLength(fixture.expected.attributes.length);
+        });
+    }
+
     test("decodes RFC2865 Access-Accept fixture deterministically", () => {
         const fixture = loadRadiusPacketFixture("protocol/rfc2865/packets/access-accept.class.json");
         const packet = hexToBuffer(fixture.packetHex);

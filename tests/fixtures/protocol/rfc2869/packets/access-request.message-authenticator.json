@@ -1,0 +1,20 @@
+{
+  "name": "rfc2869-access-request-message-authenticator",
+  "rfc": "RFC2869",
+  "description": "Access-Request packet with a fixed 16-byte Message-Authenticator attribute.",
+  "packetHex": "01 11 00 26 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 50 12 6d 65 73 73 61 67 65 2d 61 75 74 68 2d 31 36 62",
+  "expected": {
+    "code": 1,
+    "identifier": 17,
+    "length": 38,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 80,
+        "name": "Message-Authenticator",
+        "rawHex": "6d6573736167652d617574682d313662",
+        "decodedValue": "message-auth-16b"
+      }
+    ]
+  }
+}
