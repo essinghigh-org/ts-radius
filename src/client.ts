@@ -29,16 +29,37 @@ interface RetryPolicy {
 
 type ProbeMode = "auth" | "accounting" | "coa" | "disconnect";
 
+type RadiusProtocolAdapter = {
+  radiusAuthenticate: typeof radiusAuthenticate;
+  radiusStatusServerProbe: typeof radiusStatusServerProbe;
+  radiusAccounting: typeof radiusAccounting;
+  radiusCoa: typeof radiusCoa;
+  radiusDisconnect: typeof radiusDisconnect;
+};
+
+type RadiusClientDependencies = {
+  protocol?: RadiusProtocolAdapter;
+};
+
+const defaultProtocolAdapter: RadiusProtocolAdapter = {
+  radiusAuthenticate,
+  radiusStatusServerProbe,
+  radiusAccounting,
+  radiusCoa,
+  radiusDisconnect,
+};
+
 export class RadiusClient {
   private config: RadiusConfig;
   private logger: Logger;
+  private protocol: RadiusProtocolAdapter;
   private hosts: string[] = [];
   private health: Map<string, HostHealth> = new Map();
   private activeHost: string | null = null;
   private inProgress: boolean = false;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
 
-  constructor(config: RadiusConfig, logger?: Logger) {
+  constructor(config: RadiusConfig, logger?: Logger, dependencies?: RadiusClientDependencies) {
     this.config = config;
     if (!this.config.secret) {
       throw new Error('[radius-client] config.secret is required');
@@ -47,6 +68,7 @@ export class RadiusClient {
       throw new Error('[radius-client] health check credentials (healthCheckUser, healthCheckPassword) are required');
     }
     this.logger = logger || new ConsoleLogger();
+    this.protocol = dependencies?.protocol ?? defaultProtocolAdapter;
     this.reloadHostsFromConfig();
     this.selectInitialActive();
     this.scheduleHealthChecks();
@@ -93,7 +115,7 @@ export class RadiusClient {
       });
 
       try {
-        const result = await radiusAuthenticate(host, username, password, protocolOptions, this.logger);
+        const result = await this.protocol.radiusAuthenticate(host, username, password, protocolOptions, this.logger);
         lastResult = result;
 
         if (result.ok || !this.isRetryableAuthFailure(result) || attempt >= maxAttempts) {
@@ -203,7 +225,7 @@ export class RadiusClient {
         timeoutMs: timeoutMs
       };
 
-      const result = await radiusAccounting(host, request, protocolOptions, this.logger);
+      const result = await this.protocol.radiusAccounting(host, request, protocolOptions, this.logger);
 
       if (!result.ok && result.error === "timeout") {
         this.logger.warn("[radius-client] accounting timeout detected", {
@@ -254,7 +276,7 @@ export class RadiusClient {
         timeoutMs
       };
 
-      const result = await radiusCoa(host, request, protocolOptions, this.logger);
+      const result = await this.protocol.radiusCoa(host, request, protocolOptions, this.logger);
 
       if (!result.ok && result.error === "timeout") {
         this.logger.warn("[radius-client] coa timeout detected", {
@@ -293,7 +315,7 @@ export class RadiusClient {
         timeoutMs
       };
 
-      const result = await radiusDisconnect(host, request, protocolOptions, this.logger);
+      const result = await this.protocol.radiusDisconnect(host, request, protocolOptions, this.logger);
 
       if (!result.ok && result.error === "timeout") {
         this.logger.warn("[radius-client] disconnect timeout detected", {
@@ -514,7 +536,7 @@ export class RadiusClient {
           timeoutMs
         };
 
-        const accountingRes = await radiusAccounting(
+        const accountingRes = await this.protocol.radiusAccounting(
           host,
           accountingProbeRequest,
           accountingOptions,
@@ -541,8 +563,8 @@ export class RadiusClient {
         };
 
         const dynamicResult = probeType === "coa"
-          ? await radiusCoa(host, request, protocolOptions, this.logger)
-          : await radiusDisconnect(host, request, protocolOptions, this.logger);
+          ? await this.protocol.radiusCoa(host, request, protocolOptions, this.logger)
+          : await this.protocol.radiusDisconnect(host, request, protocolOptions, this.logger);
 
         if (dynamicResult.ok) {
           return markHealthy(probeType);
@@ -573,7 +595,7 @@ export class RadiusClient {
 
       if (probeMode === 'status-server') {
         try {
-          const statusResult = await radiusStatusServerProbe(host, protocolOptions, this.logger);
+          const statusResult = await this.protocol.radiusStatusServerProbe(host, protocolOptions, this.logger);
           if (statusResult.ok) {
             return markHealthy('status-server');
           }
@@ -590,7 +612,7 @@ export class RadiusClient {
         }
       }
 
-      const authProbe = await radiusAuthenticate(host, hcUser, hcPass, protocolOptions, this.logger);
+      const authProbe = await this.protocol.radiusAuthenticate(host, hcUser, hcPass, protocolOptions, this.logger);
       return evaluateAuthProbeResponse(authProbe);
 
     } catch (e) {
