@@ -33,6 +33,7 @@ let authCalls: {
   options: RadiusProtocolOptions;
   logger: unknown;
 }[] = [];
+let authResponseByUsername: Map<string, RadiusResult[]> = new Map();
 let authDelayMsByHost: Map<string, number> = new Map();
 let statusCalls: {
   host: string;
@@ -70,6 +71,14 @@ const protocolMock = {
     logger?: unknown
   ): Promise<RadiusResult> => {
     authCalls.push({ host, username, password, options, logger });
+
+    const scriptedResponses = authResponseByUsername.get(username);
+    if (scriptedResponses && scriptedResponses.length > 0) {
+      const scriptedResponse = scriptedResponses.shift();
+      if (scriptedResponse) {
+        return scriptedResponse;
+      }
+    }
 
     const delayMs = authDelayMsByHost.get(host) ?? 0;
     if (delayMs > 0) {
@@ -252,6 +261,7 @@ describe('RadiusClient Failover', () => {
     responsiveCoaHosts = new Set(['10.0.0.1']);
     responsiveDisconnectHosts = new Set(['10.0.0.1']);
     authCalls = [];
+    authResponseByUsername = new Map();
     authDelayMsByHost = new Map();
     statusCalls = [];
     accountingCalls = [];
@@ -544,6 +554,37 @@ describe('RadiusClient Failover', () => {
     expect(nonRetryableUserCalls).toHaveLength(1);
     expect(nonRetryableUserCalls[0]?.host).toBe('10.0.0.1');
     expect(retryClient.getActiveHost()).toBe('10.0.0.1');
+
+    retryClient.shutdown();
+  });
+
+  test('authenticate preserves access_challenge compatibility without retries', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 3,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    responsiveHosts = new Set(['10.0.0.1', '10.0.0.2']);
+    authCalls = [];
+    authResponseByUsername = new Map([
+      ['challenge-user', [{ ok: false, error: 'access_challenge' }]]
+    ]);
+
+    const result = await retryClient.authenticate('challenge-user', 'pass');
+    const challengeUserCalls = authCalls.filter((call) => call.username === 'challenge-user');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('access_challenge');
+    expect(challengeUserCalls).toHaveLength(1);
+    expect(challengeUserCalls[0]?.host).toBe('10.0.0.1');
 
     retryClient.shutdown();
   });

@@ -60,6 +60,29 @@ export interface RadiusResult {
   error?: string;
 }
 
+export interface RadiusChallengeContext {
+  /** User-Name carried through the continuation flow. */
+  username: string;
+  /** 1-based challenge round index (incremented per Access-Challenge response). */
+  round: number;
+  /** Maximum permitted Access-Challenge rounds for this flow. */
+  maxRounds: number;
+  /** Hex-encoded State (Type 24) value to round-trip in the next Access-Request. */
+  state: string;
+  /** Hex-encoded Proxy-State (Type 33) values to round-trip in order. */
+  proxyState: string[];
+}
+
+export interface RadiusChallengeContinuationOptions {
+  /** Maximum Access-Challenge rounds allowed in the continuation flow (default: 3). */
+  maxChallengeRounds?: number;
+}
+
+export interface RadiusChallengeResult extends RadiusResult {
+  /** Continuation context available when error === "access_challenge" and context is valid. */
+  challenge?: RadiusChallengeContext;
+}
+
 export interface RadiusAttribute {
   type: number;
   value: string | number | Buffer;
