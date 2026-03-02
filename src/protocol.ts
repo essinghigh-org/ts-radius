@@ -6,7 +6,6 @@ import { isIP, SocketAddress } from "node:net";
 import type {
   Logger,
   ParsedRadiusAttribute,
-  RadiusAccountingAttribute,
   RadiusAccountingRequest,
   RadiusAccountingStatusType,
   RadiusCoaRequest,
@@ -131,7 +130,7 @@ function encodeIntegerAttribute(type: number, value: number): Buffer {
 }
 
 function encodeCustomAttributeValue(
-  attribute: RadiusAccountingAttribute | RadiusDynamicAuthorizationAttribute
+  attribute: RadiusDynamicAuthorizationAttribute
 ): Buffer {
   if (typeof attribute.value === "string") {
     return encodeStringAttribute(attribute.type, attribute.value);
