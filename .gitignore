@@ -5,6 +5,7 @@ node_modules
 out
 dist
 *.tgz
+tests/fixtures/tmp-*
 
 # code coverage
 coverage

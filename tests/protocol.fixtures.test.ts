@@ -26,6 +26,7 @@ function discoverPacketFixturePaths(relativeDirectory: string): string[] {
 }
 
 const RFC2869_PACKET_FIXTURES = discoverPacketFixturePaths("protocol/rfc2869/packets");
+const RFC6929_PACKET_FIXTURES = discoverPacketFixturePaths("protocol/rfc6929/packets");
 
 function createVendorSpecificFixture(decodedValue: unknown): RadiusPacketFixture {
     return {
@@ -57,6 +58,13 @@ describe("Protocol fixture infrastructure", () => {
             "protocol/rfc2869/packets/access-request.message-authenticator.json",
             "protocol/rfc2869/packets/accounting-request.acct-interim-interval.json",
             "protocol/rfc2869/packets/accounting-request.event-timestamp.json",
+        ]);
+    });
+
+    test("discovers all expected RFC6929 packet fixtures", () => {
+        expect(RFC6929_PACKET_FIXTURES).toEqual([
+            "protocol/rfc6929/packets/access-accept.extended-attribute.json",
+            "protocol/rfc6929/packets/access-accept.long-extended-attribute.json",
         ]);
     });
 
@@ -174,31 +182,7 @@ describe("Protocol fixture infrastructure", () => {
     });
 
     test("decodes RFC6929 extended attributes and preserves raw payload bytes", () => {
-        const fixture: RadiusPacketFixture = {
-            name: "rfc6929-extended-attribute",
-            rfc: "RFC6929",
-            description: "Access-Accept packet with one extended attribute (Type 241).",
-            packetHex: "02 01 00 1b 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f1 07 01 de ad be ef",
-            expected: {
-                code: 2,
-                identifier: 1,
-                length: 27,
-                authenticatorHexPattern: "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-                attributes: [
-                    {
-                        id: 241,
-                        name: "Extended-Attribute-241",
-                        rawHex: "01deadbeef",
-                        decodedValue: {
-                            format: "extended",
-                            extendedType: 1,
-                            data: "deadbeef",
-                        },
-                    },
-                ],
-            },
-        };
-
+        const fixture = loadRadiusPacketFixture("protocol/rfc6929/packets/access-accept.extended-attribute.json");
         const packet = hexToBuffer(fixture.packetHex);
         const decodedPacket = assertPacketMatchesFixture(packet, fixture);
 
@@ -207,33 +191,7 @@ describe("Protocol fixture infrastructure", () => {
     });
 
     test("decodes RFC6929 long-extended attributes and exposes continuation metadata", () => {
-        const fixture: RadiusPacketFixture = {
-            name: "rfc6929-long-extended-attribute",
-            rfc: "RFC6929",
-            description: "Access-Accept packet with one long-extended attribute (Type 245).",
-            packetHex: "02 01 00 1c 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f5 08 05 80 ca fe ba be",
-            expected: {
-                code: 2,
-                identifier: 1,
-                length: 28,
-                authenticatorHexPattern: "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-                attributes: [
-                    {
-                        id: 245,
-                        name: "Long-Extended-Attribute-245",
-                        rawHex: "0580cafebabe",
-                        decodedValue: {
-                            format: "long-extended",
-                            extendedType: 5,
-                            flags: 128,
-                            hasMore: true,
-                            data: "cafebabe",
-                        },
-                    },
-                ],
-            },
-        };
-
+        const fixture = loadRadiusPacketFixture("protocol/rfc6929/packets/access-accept.long-extended-attribute.json");
         const packet = hexToBuffer(fixture.packetHex);
         const decodedPacket = assertPacketMatchesFixture(packet, fixture);
 

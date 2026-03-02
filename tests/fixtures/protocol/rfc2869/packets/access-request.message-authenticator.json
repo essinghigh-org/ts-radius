@@ -1,8 +1,8 @@
 {
   "name": "rfc2869-access-request-message-authenticator",
   "rfc": "RFC2869",
-  "description": "Access-Request packet with a fixed 16-byte Message-Authenticator attribute.",
-  "packetHex": "01 11 00 26 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 50 12 6d 65 73 73 61 67 65 2d 61 75 74 68 2d 31 36 62",
+  "description": "Access-Request packet with a deterministic non-HMAC 16-byte Message-Authenticator placeholder.",
+  "packetHex": "01 11 00 26 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 50 12 4d 41 2d 50 4c 41 43 45 48 4f 4c 44 45 52 30 31",
   "expected": {
     "code": 1,
     "identifier": 17,
@@ -12,8 +12,8 @@
       {
         "id": 80,
         "name": "Message-Authenticator",
-        "rawHex": "6d6573736167652d617574682d313662",
-        "decodedValue": "message-auth-16b"
+        "rawHex": "4d412d504c414345484f4c4445523031",
+        "decodedValue": "MA-PLACEHOLDER01"
       }
     ]
   }

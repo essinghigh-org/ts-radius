@@ -40,15 +40,18 @@ export interface DecodedRadiusPacket {
     raw: Buffer;
 }
 
+export interface LoadRadiusPacketFixtureOptions {
+    fixturesRoot?: string;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURES_ROOT = path.resolve(__dirname, "..", "fixtures");
-const FIXTURES_ROOT_REALPATH = realpathSync(FIXTURES_ROOT);
 const FIXTURE_SCHEMA_RELATIVE_PATH = "schema/radius-packet-fixture.schema.json";
-const fixtureSchemaValidator = createFixtureSchemaValidator();
+const fixtureSchemaValidatorByRoot = new Map<string, ValidateFunction>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null;
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeHex(value: string): string {
@@ -65,7 +68,14 @@ function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
     return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
-function resolveFixturePath(relativePath: string): string {
+function resolveFixtureRoot(fixturesRoot?: string): { rootPath: string; rootRealPath: string } {
+    const rootPath = fixturesRoot ? path.resolve(fixturesRoot) : FIXTURES_ROOT;
+    const rootRealPath = realpathSync(rootPath);
+
+    return { rootPath, rootRealPath };
+}
+
+function resolveFixturePath(relativePath: string, rootPath: string, rootRealPath: string): string {
     if (relativePath.trim().length === 0) {
         throw new Error("Fixture path must not be empty");
     }
@@ -74,14 +84,14 @@ function resolveFixturePath(relativePath: string): string {
         throw new Error(`Fixture path must be relative to tests/fixtures: ${relativePath}`);
     }
 
-    const fixturePath = path.resolve(FIXTURES_ROOT, relativePath);
+    const fixturePath = path.resolve(rootPath, relativePath);
 
-    if (!isPathInsideRoot(FIXTURES_ROOT, fixturePath)) {
+    if (!isPathInsideRoot(rootPath, fixturePath)) {
         throw new Error(`Fixture path escapes tests/fixtures: ${relativePath}`);
     }
 
     const fixtureRealPath = realpathSync(fixturePath);
-    if (!isPathInsideRoot(FIXTURES_ROOT_REALPATH, fixtureRealPath)) {
+    if (!isPathInsideRoot(rootRealPath, fixtureRealPath)) {
         throw new Error(`Fixture path resolves outside tests/fixtures: ${relativePath}`);
     }
 
@@ -119,8 +129,8 @@ function formatSchemaValidationErrors(errors: readonly unknown[] | null | undefi
         .join("; ");
 }
 
-function createFixtureSchemaValidator(): ValidateFunction {
-    const schemaPath = resolveFixturePath(FIXTURE_SCHEMA_RELATIVE_PATH);
+function createFixtureSchemaValidator(rootPath: string, rootRealPath: string): ValidateFunction {
+    const schemaPath = resolveFixturePath(FIXTURE_SCHEMA_RELATIVE_PATH, rootPath, rootRealPath);
     const schemaText = readFileSync(schemaPath, "utf8");
     const schema = JSON.parse(schemaText) as unknown;
 
@@ -131,6 +141,18 @@ function createFixtureSchemaValidator(): ValidateFunction {
     const ajv = new Ajv({ allErrors: true });
 
     return ajv.compile(schema);
+}
+
+function getFixtureSchemaValidator(rootPath: string, rootRealPath: string): ValidateFunction {
+    const existingValidator = fixtureSchemaValidatorByRoot.get(rootRealPath);
+    if (existingValidator) {
+        return existingValidator;
+    }
+
+    const validator = createFixtureSchemaValidator(rootPath, rootRealPath);
+    fixtureSchemaValidatorByRoot.set(rootRealPath, validator);
+
+    return validator;
 }
 
 function decodedArraysMatch(actual: unknown[], expected: unknown[]): boolean {
@@ -214,10 +236,15 @@ function decodedValuesMatch(actual: unknown, expected: unknown): boolean {
     return Object.is(actual, expected);
 }
 
-export function loadRadiusPacketFixture(relativePath: string): RadiusPacketFixture {
-    const fixturePath = resolveFixturePath(relativePath);
+export function loadRadiusPacketFixture(
+    relativePath: string,
+    options?: LoadRadiusPacketFixtureOptions,
+): RadiusPacketFixture {
+    const { rootPath, rootRealPath } = resolveFixtureRoot(options?.fixturesRoot);
+    const fixturePath = resolveFixturePath(relativePath, rootPath, rootRealPath);
     const fixtureContent = readFileSync(fixturePath, "utf8");
     const parsed = JSON.parse(fixtureContent) as unknown;
+    const fixtureSchemaValidator = getFixtureSchemaValidator(rootPath, rootRealPath);
 
     if (!fixtureSchemaValidator(parsed)) {
         const details = formatSchemaValidationErrors(fixtureSchemaValidator.errors);

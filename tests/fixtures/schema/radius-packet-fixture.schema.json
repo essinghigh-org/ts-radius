@@ -30,7 +30,7 @@
     },
     "packetHex": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[0-9A-Fa-f]{2}(?:[\\s:_-]*[0-9A-Fa-f]{2})*$"
     },
     "expected": {
       "type": "object",
@@ -85,9 +85,11 @@
               },
               "rawHex": {
                 "type": "string",
-                "minLength": 1
+                "pattern": "^[0-9A-Fa-f]{2}(?:[\\s:_-]*[0-9A-Fa-f]{2})*$"
               },
-              "decodedValue": {}
+              "decodedValue": {
+                "description": "Intentionally permissive: decoded attribute values vary by type (string, number, date-like string, arrays, objects, etc.)."
+              }
             }
           }
         }
