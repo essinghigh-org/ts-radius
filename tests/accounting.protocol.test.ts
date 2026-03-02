@@ -59,9 +59,10 @@ function buildAccountingResponsePacket(
   requestPacket: Buffer,
   secret: string,
   responseCode = 5,
-  tamperAuthenticator = false
+  tamperAuthenticator = false,
+  responseIdentifier?: number
 ): Buffer {
-  const identifier = requestPacket.readUInt8(1);
+  const identifier = responseIdentifier ?? requestPacket.readUInt8(1);
   const attributes = Buffer.alloc(0);
 
   const response = Buffer.alloc(20 + attributes.length);
@@ -85,6 +86,10 @@ function buildAccountingResponsePacket(
   }
 
   return response;
+}
+
+function appendTrailingBytes(packet: Buffer): Buffer {
+  return Buffer.concat([packet, Buffer.from([0xde, 0xad, 0xbe, 0xef])]);
 }
 
 function closeSocket(server: dgram.Socket): Promise<void> {
@@ -230,6 +235,159 @@ describe("Accounting protocol", () => {
 
       expect(result.ok).toBe(false);
       expect(result.error).toBe("authenticator_mismatch");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns identifier_mismatch when Accounting-Response identifier differs from request", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const mismatchedIdentifier = (msg.readUInt8(1) + 1) & 0xff;
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 5, false, mismatchedIdentifier);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-identifier-mismatch",
+          statusType: "Stop"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("identifier_mismatch");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns unknown_code when server responds with non-Accounting-Response code", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 2);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-unknown-code",
+          statusType: "Interim-Update"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("unknown_code");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns malformed_response when Accounting-Response declared length is invalid", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 5);
+      response.writeUInt16BE(response.length - 1, 2);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-malformed-length",
+          statusType: "Start"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects Accounting-Response trailing bytes by default strict length policy", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildAccountingResponsePacket(msg, sharedSecret, 5));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-strict-length",
+          statusType: "Start"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("accepts Accounting-Response trailing bytes in allow_trailing_bytes mode", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildAccountingResponsePacket(msg, sharedSecret, 5));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-compat-length",
+          statusType: "Stop"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "allow_trailing_bytes"
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.error).toBeUndefined();
     } finally {
       await closeSocket(server);
     }

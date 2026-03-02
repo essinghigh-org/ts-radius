@@ -271,9 +271,13 @@ describe('RadiusClient Failover', () => {
     });
   });
 
-  test('sendAccounting timeout triggers host failover probing', async () => {
-    responsiveHosts = new Set(['10.0.0.2']);
+  test('sendAccounting timeout triggers failover when auth path is healthy but accounting path is unhealthy', async () => {
+    responsiveHosts = new Set(['10.0.0.1', '10.0.0.2']);
     responsiveAccountingHosts = new Set(['10.0.0.2']);
+
+    const authResult = await client.authenticate('alice', 'password');
+    expect(authResult.ok).toBe(true);
+    expect(client.getActiveHost()).toBe('10.0.0.1');
 
     const result = await client.sendAccounting({
       username: 'alice',

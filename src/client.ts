@@ -106,8 +106,8 @@ export class RadiusClient {
           statusType: request.statusType,
           sessionId: request.sessionId
         });
-        this.onAuthTimeout().catch((error: unknown) => {
-          this.logger.warn("[radius-client] onAuthTimeout error", error);
+        this.onAccountingTimeout(request).catch((error: unknown) => {
+          this.logger.warn("[radius-client] onAccountingTimeout error", error);
         });
       }
 
@@ -225,7 +225,7 @@ export class RadiusClient {
     }
   }
 
-  public async failover(): Promise<string | null> {
+  public async failover(probeType: "auth" | "accounting" = "auth"): Promise<string | null> {
     if (this.inProgress) return null;
     this.inProgress = true;
     try {
@@ -234,9 +234,10 @@ export class RadiusClient {
       const ordered = [...this.hosts.slice(startIndex), ...this.hosts.slice(0, startIndex)];
       for (const host of ordered) {
         if (host === this.activeHost) continue;
-        const ok = await this.probeHost(host);
+        const ok = await this.probeHost(host, probeType);
         if (ok) {
-          this.setActiveHost(host, 'failover');
+          const reason = probeType === "accounting" ? "failover-accounting" : "failover";
+          this.setActiveHost(host, reason);
           return host;
         }
       }
@@ -249,7 +250,7 @@ export class RadiusClient {
     }
   }
 
-  private async probeHost(host: string): Promise<boolean> {
+  private async probeHost(host: string, probeType: "auth" | "accounting" = "auth"): Promise<boolean> {
     const hcUser = this.config.healthCheckUser;
     const hcPass = this.config.healthCheckPassword;
     const timeoutMs = this.config.healthCheckTimeoutMs || 5000;
@@ -268,7 +269,44 @@ export class RadiusClient {
 
     entry.lastTriedAt = Date.now();
     try {
-      this.logger.debug('[radius-client] probing host', { host });
+      this.logger.debug('[radius-client] probing host', { host, probeType });
+
+      if (probeType === "accounting") {
+        const accountingPort = this.config.accountingPort || this.config.port || 1813;
+        const accountingProbeRequest: RadiusAccountingRequest = {
+          username: hcUser,
+          sessionId: `health-${String(Date.now())}`,
+          statusType: "Interim-Update"
+        };
+        const accountingOptions = {
+          secret: this.config.secret,
+          port: accountingPort,
+          accountingPort,
+          timeoutMs
+        };
+
+        const accountingRes = await radiusAccounting(
+          host,
+          accountingProbeRequest,
+          accountingOptions,
+          this.logger
+        );
+
+        if (accountingRes.ok) {
+          entry.lastOkAt = Date.now();
+          entry.consecutiveFailures = 0;
+          this.logger.debug('[radius-client] accounting probe success', { host });
+          return true;
+        }
+
+        entry.consecutiveFailures++;
+        this.logger.debug('[radius-client] accounting probe failed', {
+          host,
+          error: accountingRes.error
+        });
+        return false;
+      }
+
       const port = this.config.port || 1812;
 
       const protocolOptions = {
@@ -312,10 +350,24 @@ export class RadiusClient {
   private async onAuthTimeout() {
     this.logger.warn('[radius-client] auth timeout detected; probing active host');
     if (this.activeHost) {
-      const alive = await this.probeHost(this.activeHost);
-      if (!alive) await this.failover();
+      const alive = await this.probeHost(this.activeHost, "auth");
+      if (!alive) await this.failover("auth");
     } else {
       await this.backgroundHealthCycle();
+    }
+  }
+
+  // Called when an accounting attempt times out to verify accounting path health before failover.
+  private async onAccountingTimeout(request: RadiusAccountingRequest) {
+    this.logger.warn('[radius-client] accounting timeout detected; probing active host on accounting path', {
+      statusType: request.statusType,
+      sessionId: request.sessionId
+    });
+    if (this.activeHost) {
+      const alive = await this.probeHost(this.activeHost, "accounting");
+      if (!alive) await this.failover("accounting");
+    } else {
+      await this.failover("accounting");
     }
   }
 }

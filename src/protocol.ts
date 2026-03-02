@@ -7,7 +7,8 @@ import type {
   RadiusAccountingRequest,
   RadiusAccountingStatusType,
   RadiusProtocolOptions,
-  RadiusResult
+  RadiusResult,
+  ResponseLengthValidationPolicy
 } from "./types";
 import { decodeAttribute } from "./helpers";
 
@@ -90,24 +91,67 @@ function parseAttributes(packet: Buffer, logger?: Logger): ParsedRadiusAttribute
   return attributes;
 }
 
-function validateResponsePacket(response: Buffer, logger?: Logger): string | undefined {
+function getResponseLengthValidationPolicy(options: RadiusProtocolOptions): ResponseLengthValidationPolicy {
+  return options.responseLengthValidationPolicy === "allow_trailing_bytes"
+    ? "allow_trailing_bytes"
+    : "strict";
+}
+
+function validateResponsePacket(
+  response: Buffer,
+  options: RadiusProtocolOptions,
+  logger?: Logger
+): { packet: Buffer } | { error: "malformed_response" } {
   if (response.length < 20) {
     if (logger) logger.warn("[radius] received malformed response (too short)");
-    return "malformed_response";
+    return { error: "malformed_response" };
   }
 
   const declaredLength = response.readUInt16BE(2);
-  if (declaredLength !== response.length) {
+  if (declaredLength < 20) {
     if (logger) {
-      logger.warn("[radius] received malformed response (length mismatch)", {
+      logger.warn("[radius] received malformed response (declared length below minimum)", {
         declaredLength,
         actualLength: response.length
       });
     }
-    return "malformed_response";
+    return { error: "malformed_response" };
   }
 
-  return undefined;
+  if (declaredLength > response.length) {
+    if (logger) {
+      logger.warn("[radius] received malformed response (declared length exceeds datagram length)", {
+        declaredLength,
+        actualLength: response.length
+      });
+    }
+    return { error: "malformed_response" };
+  }
+
+  if (declaredLength < response.length) {
+    const policy = getResponseLengthValidationPolicy(options);
+    if (policy === "strict") {
+      if (logger) {
+        logger.warn("[radius] received malformed response (length mismatch)", {
+          declaredLength,
+          actualLength: response.length,
+          policy
+        });
+      }
+      return { error: "malformed_response" };
+    }
+
+    if (logger) {
+      logger.warn("[radius] response has trailing bytes; truncating to declared length", {
+        declaredLength,
+        actualLength: response.length,
+        policy
+      });
+    }
+    return { packet: response.subarray(0, declaredLength) };
+  }
+
+  return { packet: response };
 }
 
 function hasValidResponseAuthenticator(response: Buffer, requestAuthenticator: Buffer, secret: string): boolean {
@@ -270,24 +314,26 @@ export async function radiusAuthenticate(
       clearTimeout(timer);
       client.close();
 
-      const malformedError = validateResponsePacket(msg, logger);
-      if (malformedError) {
-        resolve({ ok: false, raw: msg.toString("hex"), error: malformedError });
+      const packetValidation = validateResponsePacket(msg, options, logger);
+      if ("error" in packetValidation) {
+        resolve({ ok: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;
       }
 
-      if (msg.readUInt8(1) !== id) {
-        resolve({ ok: false, raw: msg.toString("hex"), error: "identifier_mismatch" });
+      const response = packetValidation.packet;
+
+      if (response.readUInt8(1) !== id) {
+        resolve({ ok: false, raw: response.toString("hex"), error: "identifier_mismatch" });
         return;
       }
 
-      if (!hasValidResponseAuthenticator(msg, authenticator, secret)) {
+      if (!hasValidResponseAuthenticator(response, authenticator, secret)) {
         if (logger) logger.warn("[radius] response authenticator mismatch; dropping response");
-        resolve({ ok: false, raw: msg.toString("hex"), error: "authenticator_mismatch" });
+        resolve({ ok: false, raw: response.toString("hex"), error: "authenticator_mismatch" });
         return;
       }
 
-      const code = msg.readUInt8(0);
+      const code = response.readUInt8(0);
 
       // 2 = Access-Accept, 3 = Access-Reject, 11 = Access-Challenge
       if (code === 2 || code === 3 || code === 11) {
@@ -297,9 +343,9 @@ export async function radiusAuthenticate(
         const allClasses: string[] = [];
         const parsedAttributes: ParsedRadiusAttribute[] = [];
 
-        while (offset + 2 <= msg.length) {
-          const t = msg.readUInt8(offset);
-          const l = msg.readUInt8(offset + 1);
+        while (offset + 2 <= response.length) {
+          const t = response.readUInt8(offset);
+          const l = response.readUInt8(offset + 1);
 
           // Validate attribute length per RFC 2865
           if (l < 2) {
@@ -308,12 +354,12 @@ export async function radiusAuthenticate(
           }
 
           // ensure attribute does not run past the end of the packet
-          if (offset + l > msg.length) {
+          if (offset + l > response.length) {
             if (logger) logger.warn('[radius] attribute length runs past packet end; stopping parse');
             break;
           }
 
-          const value = msg.subarray(offset + 2, offset + l);
+          const value = response.subarray(offset + 2, offset + l);
 
           // NEW: Generic parsing
           try {
@@ -394,11 +440,11 @@ export async function radiusAuthenticate(
             ok: isOk,
             class: foundClass,
             attributes: parsedAttributes,
-            raw: msg.toString("hex"),
+            raw: response.toString("hex"),
             error: errorString
         });
       } else {
-        resolve({ ok: false, raw: msg.toString("hex"), error: 'unknown_code' });
+        resolve({ ok: false, raw: response.toString("hex"), error: 'unknown_code' });
       }
     });
 
@@ -499,31 +545,33 @@ export async function radiusAccounting(
       clearTimeout(timer);
       client.close();
 
-      const malformedError = validateResponsePacket(msg, logger);
-      if (malformedError) {
-        resolve({ ok: false, raw: msg.toString("hex"), error: malformedError });
+      const packetValidation = validateResponsePacket(msg, options, logger);
+      if ("error" in packetValidation) {
+        resolve({ ok: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;
       }
 
-      if (msg.readUInt8(1) !== id) {
-        resolve({ ok: false, raw: msg.toString("hex"), error: "identifier_mismatch" });
+      const response = packetValidation.packet;
+
+      if (response.readUInt8(1) !== id) {
+        resolve({ ok: false, raw: response.toString("hex"), error: "identifier_mismatch" });
         return;
       }
 
-      if (!hasValidResponseAuthenticator(msg, requestAuthenticator, secret)) {
+      if (!hasValidResponseAuthenticator(response, requestAuthenticator, secret)) {
         if (logger) logger.warn("[radius] accounting response authenticator mismatch; dropping response");
-        resolve({ ok: false, raw: msg.toString("hex"), error: "authenticator_mismatch" });
+        resolve({ ok: false, raw: response.toString("hex"), error: "authenticator_mismatch" });
         return;
       }
 
-      const code = msg.readUInt8(0);
-      const parsedAttributes = parseAttributes(msg, logger);
+      const code = response.readUInt8(0);
+      const parsedAttributes = parseAttributes(response, logger);
 
       if (code !== 5) {
         resolve({
           ok: false,
           attributes: parsedAttributes,
-          raw: msg.toString("hex"),
+          raw: response.toString("hex"),
           error: "unknown_code"
         });
         return;
@@ -532,7 +580,7 @@ export async function radiusAccounting(
       resolve({
         ok: true,
         attributes: parsedAttributes,
-        raw: msg.toString("hex")
+        raw: response.toString("hex")
       });
     });
 
