@@ -732,6 +732,9 @@ export class RadiusClient {
         secret: this.config.secret,
         port: port,
         timeoutMs: timeoutMs,
+        authMethod: this.config.authMethod,
+        chapId: this.config.chapId,
+        chapChallenge: this.config.chapChallenge,
         validateResponseSource: this.config.validateResponseSource,
         responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
       };
