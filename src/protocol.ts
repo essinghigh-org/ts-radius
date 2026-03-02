@@ -1741,7 +1741,12 @@ export async function radiusAccounting(
       clearTimeout(timer);
       client.close();
 
-      const packetValidation = validateResponsePacket(msg, responseValidationOptions, logger);
+      const packetValidation = validateResponsePacket(
+        msg,
+        responseValidationOptions,
+        logger,
+        MAX_ACCOUNTING_PACKET_LENGTH
+      );
       if ("error" in packetValidation) {
         resolve({ ok: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;
