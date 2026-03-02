@@ -1719,7 +1719,8 @@ export async function radiusAccounting(
   const port = options.accountingPort ?? options.port ?? 1813;
   const timeoutMs = options.timeoutMs ?? 5000;
   const validateResponseSource = options.validateResponseSource !== false;
-  const requestIdentity = resolveAccountingRequestIdentity(options);
+  const resolvedRequestIdentity = resolveAccountingRequestIdentity(options);
+  const requestIdentity: RadiusAccountingRequestIdentity = { ...resolvedRequestIdentity };
   const responseValidationOptions: RadiusProtocolOptions = options.responseLengthValidationPolicy === undefined
     ? { ...options, responseLengthValidationPolicy: "allow_trailing_bytes" }
     : options;
@@ -1923,7 +1924,8 @@ async function sendDynamicAuthorization(
     });
   }
 
-  const requestIdentity = resolveDynamicAuthorizationRequestIdentity(options);
+  const resolvedRequestIdentity = resolveDynamicAuthorizationRequestIdentity(options);
+  const requestIdentity: RadiusDynamicAuthorizationRequestIdentity = { ...resolvedRequestIdentity };
   const { identifier: id, requestAuthenticator: requestAuthenticatorOverride } = requestIdentity;
 
   return new Promise((resolve, reject) => {

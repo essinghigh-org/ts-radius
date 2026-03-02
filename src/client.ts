@@ -289,7 +289,7 @@ export class RadiusClient {
 
   public async sendAccounting(request: RadiusAccountingRequest): Promise<RadiusResult> {
     const timeoutMs = this.config.timeoutMs || 5000;
-    const accountingPort = this.config.accountingPort || this.config.port || 1813;
+    const accountingPort = this.config.accountingPort ?? 1813;
     const retryPolicy = this.getRetryPolicy();
     const maxAttempts = Number.isFinite(retryPolicy.maxAttempts)
       ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
@@ -707,7 +707,7 @@ export class RadiusClient {
       this.logger.debug('[radius-client] probing host', { host, probeType, mode: probeMode });
 
       if (probeType === "accounting") {
-        const accountingPort = this.config.accountingPort || this.config.port || 1813;
+        const accountingPort = this.config.accountingPort ?? 1813;
         const accountingProbeRequest: RadiusAccountingRequest = {
           username: hcUser,
           sessionId: this.createHealthProbeSessionId(),
@@ -732,7 +732,11 @@ export class RadiusClient {
           return markHealthy('accounting');
         }
 
-        return markUnhealthy(`accounting-${accountingRes.error || 'negative-response'}`);
+        if (accountingRes.error) {
+          return markUnhealthy(`accounting-${accountingRes.error}`);
+        }
+
+        return markHealthy('accounting');
       }
 
       if (probeType === "coa" || probeType === "disconnect") {

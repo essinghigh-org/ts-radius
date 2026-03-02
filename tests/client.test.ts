@@ -1986,6 +1986,38 @@ describe('RadiusClient Failover', () => {
     }
   });
 
+  test('sendAccounting defaults to RFC accounting port when accountingPort is unset', async () => {
+    const fallbackClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      port: 1912,
+      accountingPort: undefined
+    }, undefined, { protocol: protocolMock });
+
+    try {
+      const sessionId = 'session-accounting-default-port';
+      const result = await fallbackClient.sendAccounting({
+        username: 'alice',
+        sessionId,
+        statusType: 'Interim-Update'
+      });
+
+      expect(result.ok).toBe(true);
+
+      const call = accountingCalls.find((entry) => entry.request.sessionId === sessionId);
+      expect(call).toBeDefined();
+
+      if (!call) {
+        throw new Error('Expected accounting protocol call to validate default accounting port behavior');
+      }
+
+      expect(call.options.port).toBe(1813);
+      expect(call.options.accountingPort).toBe(1813);
+    } finally {
+      fallbackClient.shutdown();
+    }
+  });
+
   test('accounting probe session IDs are collision-safe and retain health- prefix', async () => {
     const originalDateNow = Date.now;
     Date.now = () => 1717171717171;
@@ -2225,6 +2257,47 @@ describe('RadiusClient Failover', () => {
     );
   });
 
+  test('accounting probe treats non-error negative responses as healthy', async () => {
+    accountingCalls = [];
+
+    const probeClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000
+    }, undefined, {
+      protocol: {
+        ...protocolMock,
+        radiusAccounting: async (
+          host: string,
+          request: RadiusAccountingRequest,
+          options: RadiusProtocolOptions,
+          logger?: unknown
+        ): Promise<RadiusResult> => {
+          accountingCalls.push({ host, request, options, logger });
+          return { ok: false };
+        }
+      }
+    });
+
+    const internals = probeClient as unknown as {
+      probeHost: (host: string, probeType: 'accounting') => Promise<boolean>;
+      health: Map<string, { consecutiveFailures: number }>;
+    };
+
+    try {
+      const isHealthy = await internals.probeHost('10.0.0.1', 'accounting');
+
+      expect(isHealthy).toBe(true);
+
+      const accountingProbeCall = accountingCalls.find((call) => call.request.username === config.healthCheckUser);
+      expect(accountingProbeCall).toBeDefined();
+
+      const hostHealth = internals.health.get('10.0.0.1');
+      expect(hostHealth?.consecutiveFailures).toBe(0);
+    } finally {
+      probeClient.shutdown();
+    }
+  });
+
   test('accounting timeout probe omits validateResponseSource forwarding', async () => {
     const probeClient = new RadiusClient({
       ...config,
@@ -2260,11 +2333,13 @@ describe('RadiusClient Failover', () => {
     probeClient.shutdown();
   });
 
-  test('accounting timeout probe explicitly sets strict responseLengthValidationPolicy', async () => {
+  test('accounting timeout probe uses RFC accounting port default and strict responseLengthValidationPolicy when accountingPort is unset', async () => {
     const probeClient = new RadiusClient({
       ...config,
       healthCheckIntervalMs: 60000,
-      responseLengthValidationPolicy: 'allow_trailing_bytes'
+      responseLengthValidationPolicy: 'allow_trailing_bytes',
+      port: 1912,
+      accountingPort: undefined
     }, undefined, { protocol: protocolMock });
 
     const internals = probeClient as unknown as {
@@ -2290,6 +2365,8 @@ describe('RadiusClient Failover', () => {
       throw new Error('Expected accounting timeout probe call to validate strict response length policy behavior');
     }
 
+    expect(accountingProbeCall.options.port).toBe(1813);
+    expect(accountingProbeCall.options.accountingPort).toBe(1813);
     expect(accountingProbeCall.options.responseLengthValidationPolicy).toBe('strict');
 
     probeClient.shutdown();

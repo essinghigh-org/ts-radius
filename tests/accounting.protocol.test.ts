@@ -566,7 +566,7 @@ describe("Accounting protocol", () => {
     }
   });
 
-  test("reuses provided accounting request identity and keeps packet/authenticator deterministic across repeated sends", async () => {
+  test("reuses provided accounting request identity while keeping caller identity object immutable", async () => {
     const server = await bindServer();
     const receivedPackets: Buffer[] = [];
     const sourcePorts: number[] = [];
@@ -611,8 +611,10 @@ describe("Accounting protocol", () => {
       expect(secondPacket.equals(firstPacket)).toBe(true);
 
       expect(sourcePorts).toHaveLength(2);
-      expect(sourcePorts[1]).toBe(sourcePorts[0]);
-      expect(requestIdentity.sourcePort).toBe(sourcePorts[0]);
+      for (const sourcePort of sourcePorts) {
+        expect(sourcePort).toBeGreaterThan(0);
+      }
+      expect(requestIdentity.sourcePort).toBeUndefined();
     } finally {
       await closeSocket(server);
     }

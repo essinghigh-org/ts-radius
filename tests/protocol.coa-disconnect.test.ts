@@ -311,6 +311,59 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
+  test("reuses caller-provided dynamic authorization identity without mutating sourcePort", async () => {
+    const server = await bindServer();
+    const receivedPackets: Buffer[] = [];
+    const receivedSourcePorts: number[] = [];
+    const requestIdentity: { identifier: number; sourcePort?: number } = { identifier: 0x2b };
+
+    server.on("message", (msg, rinfo) => {
+      receivedPackets.push(Buffer.from(msg));
+      receivedSourcePorts.push(rinfo.port);
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const request: RadiusCoaRequest = {
+        username: "alice",
+        sessionId: "session-immutable-identity"
+      };
+
+      const options = {
+        secret: sharedSecret,
+        port: getServerPort(server),
+        timeoutMs: 500,
+        dynamicAuthorizationRequestIdentity: requestIdentity
+      };
+
+      const firstResult = await radiusCoa("127.0.0.1", request, options);
+      const secondResult = await radiusCoa("127.0.0.1", request, options);
+
+      expect(firstResult.ok).toBe(true);
+      expect(secondResult.ok).toBe(true);
+      expect(receivedPackets).toHaveLength(2);
+
+      const firstPacket = receivedPackets[0];
+      const secondPacket = receivedPackets[1];
+      if (!firstPacket || !secondPacket) {
+        throw new Error("Expected two captured CoA request packets for repeated immutable identity validation");
+      }
+
+      expect(firstPacket.readUInt8(1)).toBe(requestIdentity.identifier);
+      expect(secondPacket.readUInt8(1)).toBe(requestIdentity.identifier);
+      expect(secondPacket.equals(firstPacket)).toBe(true);
+
+      expect(receivedSourcePorts).toHaveLength(2);
+      for (const sourcePort of receivedSourcePorts) {
+        expect(sourcePort).toBeGreaterThan(0);
+      }
+      expect(requestIdentity.sourcePort).toBeUndefined();
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("validates dynamic authorization request identity identifier before socket allocation", async () => {
     const originalCreateSocket = dgram.createSocket;
     let createSocketCalls = 0;
