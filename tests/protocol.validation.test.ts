@@ -247,4 +247,45 @@ describe("protocol request/options validation", () => {
     ) as unknown as Promise<void>;
     await invalidChapChallengeLengthRejection;
   });
+
+  test("rejects User-Name values that exceed RFC attribute payload limits", async () => {
+    const oversizedUsername = "u".repeat(254);
+
+    const oversizedUsernameRejection = (
+      expect(
+        radiusAuthenticate(
+          "127.0.0.1",
+          oversizedUsername,
+          "password",
+          {
+            secret: "secret",
+            timeoutMs: 10,
+          },
+        )
+      ).rejects.toThrow("[radius] User-Name must encode to at most 253 bytes")
+    ) as unknown as Promise<void>;
+
+    await oversizedUsernameRejection;
+  });
+
+  test("rejects PAP plaintext passwords that exceed RFC2865 128-byte limit", async () => {
+    const oversizedPassword = "p".repeat(129);
+
+    const oversizedPasswordRejection = (
+      expect(
+        radiusAuthenticate(
+          "127.0.0.1",
+          "alice",
+          oversizedPassword,
+          {
+            secret: "secret",
+            timeoutMs: 10,
+            authMethod: "pap",
+          },
+        )
+      ).rejects.toThrow("[radius] PAP password must be at most 128 bytes")
+    ) as unknown as Promise<void>;
+
+    await oversizedPasswordRejection;
+  });
 });

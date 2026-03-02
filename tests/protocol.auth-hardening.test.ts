@@ -352,6 +352,30 @@ describe("radiusAuthenticate response hardening", () => {
     expect(malformedAfterMessageAuthenticator.error).toBe("malformed_response");
   });
 
+  test("rejects malformed/overrun attribute length interactions in compatibility mode", async () => {
+    const malformedLengthBelowMinimum = await runAuthScenario({
+      responseBuilder: (request) =>
+        buildAccessAcceptResponse({
+          request,
+          attributes: [Buffer.from([25, 1])],
+        }),
+    });
+
+    expect(malformedLengthBelowMinimum.ok).toBe(false);
+    expect(malformedLengthBelowMinimum.error).toBe("malformed_response");
+
+    const malformedLengthOverrun = await runAuthScenario({
+      responseBuilder: (request) =>
+        buildAccessAcceptResponse({
+          request,
+          attributes: [Buffer.from([25, 0xff, 0x61])],
+        }),
+    });
+
+    expect(malformedLengthOverrun.ok).toBe(false);
+    expect(malformedLengthOverrun.error).toBe("malformed_response");
+  });
+
   test("rejects missing Message-Authenticator in strict policy", async () => {
     const result = await runAuthScenario({
       protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
