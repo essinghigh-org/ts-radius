@@ -20,9 +20,9 @@
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix --max-warnings=0",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bun ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
     "verify:fast": "bun run lint && bun run typecheck",
-    "verify": "bun run verify:fast && bun test"
+    "verify": "bun run verify:fast && bun run test"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -33,6 +33,7 @@
     "@types/node": "^25.2.3",
     "eslint": "^10.0.2",
     "globals": "^17.4.0",
+    "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1"
   }
 }

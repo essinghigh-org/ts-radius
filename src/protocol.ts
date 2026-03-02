@@ -24,7 +24,7 @@ export async function radiusAuthenticate(
 
   return new Promise((resolve, reject) => {
     const client = dgram.createSocket("udp4");
-    const id = crypto.randomBytes(1)[0];
+    const id = crypto.randomBytes(1).readUInt8(0);
     const authenticator = crypto.randomBytes(16);
 
     const attrs: Buffer[] = [];
@@ -45,7 +45,9 @@ export async function radiusAuthenticate(
     for (let b = 0; b < blockCount; b++) {
       const md5 = crypto.createHash("md5").update(Buffer.concat([Buffer.from(secret, "utf8"), prev])).digest();
       for (let i = 0; i < 16; i++) {
-        xored[b * 16 + i] = padded[b * 16 + i] ^ md5[i];
+        const blockOffset = b * 16 + i;
+        const xorByte = padded.readUInt8(blockOffset) ^ md5.readUInt8(i);
+        xored.writeUInt8(xorByte, blockOffset);
       }
       prev = xored.subarray(b * 16, b * 16 + 16);
     }
@@ -244,7 +246,7 @@ export async function radiusAuthenticate(
         const t = packet.readUInt8(attrOff);
         const l = packet.readUInt8(attrOff + 1);
         if (t === 80 && l === 18) {
-          for (let i = 0; i < 16; i++) packet[attrOff + 2 + i] = hmac[i];
+          for (let i = 0; i < 16; i++) packet.writeUInt8(hmac.readUInt8(i), attrOff + 2 + i);
           break;
         }
         if (l < 2) break;
