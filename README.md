@@ -6,6 +6,7 @@ A standards-compliant RADIUS client for TypeScript/Bun, extracted from a product
 
 - **Standards Compliant**: Supports RFC 2865 (PAP authentication) and RFC 2869.
 - **Accounting Support**: Sends RFC 2866 Accounting-Request packets (Start, Interim-Update, Stop).
+- **Dynamic Authorization**: Supports RFC 5176 CoA and Disconnect requests (ACK/NAK + Error-Cause).
 - **Failover**: Automatic failover to backup hosts on timeout.
 - **Health Checks**: Background health checks to restore primary hosts.
 - **Configurable**: extensive configuration for timeouts, retries, and attribute extraction.
@@ -68,6 +69,17 @@ try {
     sessionTime: 600,
     terminateCause: 1
   });
+
+  await client.sendCoa({
+    username: "username",
+    sessionId: "session-123",
+    attributes: [{ type: 11, value: "new-filter" }]
+  });
+
+  await client.sendDisconnect({
+    username: "username",
+    sessionId: "session-123"
+  });
 } catch (err) {
   console.error("Client error:", err);
 } finally {
@@ -85,6 +97,7 @@ try {
 | `secret` | `string` | (Required) | Shared secret. |
 | `port` | `number` | `1812` | RADIUS port. |
 | `accountingPort` | `number` | `1813` | RADIUS accounting port used by `sendAccounting*` APIs. |
+| `dynamicAuthorizationPort` | `number` | `3799` | CoA/Disconnect UDP port used by `sendCoa` and `sendDisconnect`. |
 | `timeoutMs` | `number` | `5000` | Request timeout in milliseconds. |
 | `healthCheckIntervalMs` | `number` | `1800000` | (30m) Interval for background health checks. |
 | `healthCheckProbeMode` | `'auth' \| 'status-server'` | `'auth'` | Probe mode for health checks. `'status-server'` uses RFC5997-oriented probes and falls back to auth probes for compatibility. |

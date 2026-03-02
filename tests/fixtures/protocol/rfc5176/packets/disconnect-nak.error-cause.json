@@ -1,0 +1,20 @@
+{
+  "name": "disconnect-nak-error-cause",
+  "rfc": "RFC5176",
+  "description": "Disconnect-NAK packet carrying Error-Cause 504 (Session Context Not Removable).",
+  "packetHex": "2a 01 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 06 00 00 01 f8",
+  "expected": {
+    "code": 42,
+    "identifier": 1,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 101,
+        "name": "Error-Cause",
+        "rawHex": "000001f8",
+        "decodedValue": 504
+      }
+    ]
+  }
+}

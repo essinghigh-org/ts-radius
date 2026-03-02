@@ -1,8 +1,12 @@
-import { radiusAccounting, radiusAuthenticate, radiusStatusServerProbe } from "./protocol";
+import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from "./protocol";
 import {
   type RadiusAccountingRequest,
   type RadiusAccountingRequestBase,
+  type RadiusCoaRequest,
+  type RadiusCoaResult,
   type RadiusConfig,
+  type RadiusDisconnectRequest,
+  type RadiusDisconnectResult,
   type RadiusResult,
   type Logger,
   ConsoleLogger
@@ -22,6 +26,8 @@ interface RetryPolicy {
   maxDelayMs: number;
   jitterRatio: number;
 }
+
+type ProbeMode = "auth" | "accounting" | "coa" | "disconnect";
 
 export class RadiusClient {
   private config: RadiusConfig;
@@ -229,6 +235,84 @@ export class RadiusClient {
     return this.sendAccounting({ ...request, statusType: "Stop" });
   }
 
+  public async sendCoa(request: RadiusCoaRequest): Promise<RadiusCoaResult> {
+    const host = this.getActiveHost();
+    const timeoutMs = this.config.timeoutMs || 5000;
+    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
+
+    this.logger.debug("[radius-client] coa start", {
+      host,
+      username: request.username,
+      sessionId: request.sessionId
+    });
+
+    try {
+      const protocolOptions = {
+        secret: this.config.secret,
+        port: dynamicAuthorizationPort,
+        dynamicAuthorizationPort,
+        timeoutMs
+      };
+
+      const result = await radiusCoa(host, request, protocolOptions, this.logger);
+
+      if (!result.ok && result.error === "timeout") {
+        this.logger.warn("[radius-client] coa timeout detected", {
+          host,
+          username: request.username,
+          sessionId: request.sessionId
+        });
+        this.onDynamicAuthorizationTimeout("coa").catch((error: unknown) => {
+          this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
+        });
+      }
+
+      return result;
+    } catch (e) {
+      this.logger.error("[radius-client] coa exception", { error: e });
+      throw e;
+    }
+  }
+
+  public async sendDisconnect(request: RadiusDisconnectRequest): Promise<RadiusDisconnectResult> {
+    const host = this.getActiveHost();
+    const timeoutMs = this.config.timeoutMs || 5000;
+    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
+
+    this.logger.debug("[radius-client] disconnect start", {
+      host,
+      username: request.username,
+      sessionId: request.sessionId
+    });
+
+    try {
+      const protocolOptions = {
+        secret: this.config.secret,
+        port: dynamicAuthorizationPort,
+        dynamicAuthorizationPort,
+        timeoutMs
+      };
+
+      const result = await radiusDisconnect(host, request, protocolOptions, this.logger);
+
+      if (!result.ok && result.error === "timeout") {
+        this.logger.warn("[radius-client] disconnect timeout detected", {
+          host,
+          username: request.username,
+          sessionId: request.sessionId
+        });
+        this.onDynamicAuthorizationTimeout("disconnect").catch((error: unknown) => {
+          this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
+        });
+      }
+
+      return result;
+    } catch (e) {
+      this.logger.error("[radius-client] disconnect exception", { error: e });
+      throw e;
+    }
+  }
+
   // --- Internal Failover / Health Logic ---
 
   private reloadHostsFromConfig() {
@@ -324,7 +408,7 @@ export class RadiusClient {
     }
   }
 
-  public async failover(probeType: "auth" | "accounting" = "auth"): Promise<string | null> {
+  public async failover(probeType: ProbeMode = "auth"): Promise<string | null> {
     let lockBusyAfterWait = this.inProgress;
     if (lockBusyAfterWait) {
       const deadline = Date.now() + 100;
@@ -351,7 +435,9 @@ export class RadiusClient {
         if (host === this.activeHost) continue;
         const ok = await this.probeHost(host, probeType);
         if (ok) {
-          const reason = probeType === "accounting" ? "failover-accounting" : "failover";
+          const reason = probeType === "auth"
+            ? "failover"
+            : `failover-${probeType}`;
           this.setActiveHost(host, reason);
           return host;
         }
@@ -365,7 +451,7 @@ export class RadiusClient {
     }
   }
 
-  private async probeHost(host: string, probeType: "auth" | "accounting" = "auth"): Promise<boolean> {
+  private async probeHost(host: string, probeType: ProbeMode = "auth"): Promise<boolean> {
     const hcUser = this.config.healthCheckUser;
     const hcPass = this.config.healthCheckPassword;
     const timeoutMs = this.config.healthCheckTimeoutMs || 5000;
@@ -412,7 +498,7 @@ export class RadiusClient {
     };
 
     try {
-  this.logger.debug('[radius-client] probing host', { host, probeType, mode: probeMode });
+      this.logger.debug('[radius-client] probing host', { host, probeType, mode: probeMode });
 
       if (probeType === "accounting") {
         const accountingPort = this.config.accountingPort || this.config.port || 1813;
@@ -441,6 +527,40 @@ export class RadiusClient {
 
         return markUnhealthy(`accounting-${accountingRes.error || 'negative-response'}`);
       }
+
+      if (probeType === "coa" || probeType === "disconnect") {
+        const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
+        const protocolOptions = {
+          secret: this.config.secret,
+          port: dynamicAuthorizationPort,
+          dynamicAuthorizationPort,
+          timeoutMs,
+        };
+        const request = {
+          username: hcUser,
+        };
+
+        const dynamicResult = probeType === "coa"
+          ? await radiusCoa(host, request, protocolOptions, this.logger)
+          : await radiusDisconnect(host, request, protocolOptions, this.logger);
+
+        if (dynamicResult.ok) {
+          return markHealthy(probeType);
+        }
+
+        if (
+          dynamicResult.error === 'timeout'
+          || dynamicResult.error === 'malformed_response'
+          || dynamicResult.error === 'identifier_mismatch'
+          || dynamicResult.error === 'authenticator_mismatch'
+        ) {
+          return markUnhealthy(`${probeType}-${dynamicResult.error}`);
+        }
+
+        // NAK/unknown still indicates dynamic-authorization reachability.
+        return markHealthy(`${probeType}-${dynamicResult.error || 'negative-response'}`);
+      }
+
       const port = this.config.port || 1812;
 
       const protocolOptions = {
@@ -500,6 +620,16 @@ export class RadiusClient {
       if (!alive) await this.failover("accounting");
     } else {
       await this.failover("accounting");
+    }
+  }
+
+  private async onDynamicAuthorizationTimeout(mode: "coa" | "disconnect") {
+    this.logger.warn('[radius-client] dynamic authorization timeout detected; probing active host', { mode });
+    if (this.activeHost) {
+      const alive = await this.probeHost(this.activeHost, mode);
+      if (!alive) await this.failover(mode);
+    } else {
+      await this.failover(mode);
     }
   }
 }
