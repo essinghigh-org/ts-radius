@@ -762,6 +762,10 @@ export async function radiusStatusServerProbe(
 
   const port = options.port || 1812;
   const timeoutMs = options.timeoutMs || 5000;
+  const validateResponseSource = options.validateResponseSource !== false;
+  const expectedSourceHosts = validateResponseSource
+    ? await resolveExpectedSourceHosts(host)
+    : null;
 
   if (logger) logger.debug('[radius] status-server probe start', { host });
 
@@ -811,47 +815,49 @@ export async function radiusStatusServerProbe(
       resolve({ ok: false, error: 'timeout' });
     }, timeoutMs);
 
-    client.on("message", (msg) => {
+    client.on("message", (msg, remoteInfo) => {
       clearTimeout(timer);
       client.close();
 
-      if (msg.length < 20) {
-        if (logger) logger.warn('[radius] status-server malformed response (too short)');
-        resolve({ ok: false, raw: msg.toString("hex"), error: 'malformed_response' });
+      const packetValidation = validateResponsePacket(msg, options, logger);
+      if ("error" in packetValidation) {
+        resolve({ ok: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;
       }
 
-      try {
-        const respAuth = msg.subarray(4, 20);
-        const lenBuf = Buffer.alloc(2);
-        lenBuf.writeUInt16BE(msg.length, 0);
-        const toHash = Buffer.concat([
-          Buffer.from([msg.readUInt8(0)]),
-          Buffer.from([msg.readUInt8(1)]),
-          lenBuf,
-          authenticator,
-          msg.subarray(20),
-          Buffer.from(secret, "utf8"),
-        ]);
+      const response = packetValidation.packet;
 
-        const expected = crypto.createHash("md5").update(toHash).digest();
-        if (!expected.equals(respAuth)) {
-          if (logger) logger.warn('[radius] status-server authenticator mismatch; dropping response');
-          resolve({ ok: false, raw: msg.toString("hex"), error: 'authenticator_mismatch' });
-          return;
+      if (
+        validateResponseSource
+        && expectedSourceHosts
+        && !isResponseSourceValid(remoteInfo, expectedSourceHosts, port)
+      ) {
+        if (logger) {
+          logger.warn('[radius] received status-server response from unexpected source', {
+            expectedHosts: [...expectedSourceHosts],
+            expectedPort: port,
+            actualHost: remoteInfo.address,
+            actualPort: remoteInfo.port,
+          });
         }
-      } catch (e) {
-        if (logger) logger.warn('[radius] status-server authenticator verification error', e);
+        resolve({ ok: false, raw: response.toString("hex"), error: 'malformed_response' });
+        return;
       }
 
-      const code = msg.readUInt8(0);
+      if (!hasValidResponseAuthenticator(response, authenticator, secret)) {
+        if (logger) logger.warn('[radius] status-server authenticator mismatch; dropping response');
+        resolve({ ok: false, raw: response.toString("hex"), error: 'authenticator_mismatch' });
+        return;
+      }
+
+      const code = response.readUInt8(0);
       // Valid response packet codes indicate server liveness.
       if (code === 2 || code === 3 || code === 5 || code === 11) {
-        resolve({ ok: true, raw: msg.toString("hex") });
+        resolve({ ok: true, raw: response.toString("hex") });
         return;
       }
 
-      resolve({ ok: false, raw: msg.toString("hex"), error: 'unknown_code' });
+      resolve({ ok: false, raw: response.toString("hex"), error: 'unknown_code' });
     });
 
     client.on("error", (err) => {
