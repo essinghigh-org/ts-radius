@@ -1,10 +1,145 @@
-import dgram from "dgram";
-import crypto from "crypto";
-import type { Logger, RadiusResult, RadiusProtocolOptions, ParsedRadiusAttribute } from "./types";
+import { lookup } from "node:dns/promises";
+import dgram, { type RemoteInfo } from "node:dgram";
+import crypto from "node:crypto";
+import { isIP } from "node:net";
+
+import type {
+  Logger,
+  ParsedRadiusAttribute,
+  RadiusProtocolOptions,
+  RadiusResult,
+  ResponseMessageAuthenticatorPolicy,
+} from "./types";
 import { decodeAttribute } from "./helpers";
 
 // Minimal RADIUS client using UDP for Access-Request/Accept exchange.
 // This is intentionally small and supports only PAP (User-Password) and Class attribute extraction.
+
+const MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE = 80;
+const MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH = 18;
+
+interface MessageAuthenticatorValidationResult {
+  present: boolean;
+  valid: boolean;
+  reason?: string;
+}
+
+function normalizeHostValue(host: string): string {
+  let normalized = host.trim().toLowerCase();
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    normalized = normalized.slice(1, -1);
+  }
+  if (normalized.startsWith("::ffff:")) {
+    normalized = normalized.slice(7);
+  }
+  return normalized;
+}
+
+async function resolveExpectedSourceHosts(host: string): Promise<Set<string>> {
+  const expectedHosts = new Set<string>([normalizeHostValue(host)]);
+
+  if (isIP(host) !== 0) {
+    return expectedHosts;
+  }
+
+  try {
+    const records = await lookup(host, { all: true });
+    for (const record of records) {
+      expectedHosts.add(normalizeHostValue(record.address));
+    }
+  } catch {
+    // Keep compatibility for environments where DNS lookup is blocked.
+  }
+
+  return expectedHosts;
+}
+
+function isResponseSourceValid(remoteInfo: RemoteInfo, expectedHosts: Set<string>, expectedPort: number): boolean {
+  if (remoteInfo.port !== expectedPort) {
+    return false;
+  }
+
+  return expectedHosts.has(normalizeHostValue(remoteInfo.address));
+}
+
+function validateResponseMessageAuthenticator(
+  msg: Buffer,
+  secret: string,
+  requestAuthenticator: Buffer
+): MessageAuthenticatorValidationResult {
+  let offset = 20;
+  let messageAuthenticatorOffset: number | null = null;
+
+  while (offset + 2 <= msg.length) {
+    const type = msg.readUInt8(offset);
+    const length = msg.readUInt8(offset + 1);
+
+    if (length < 2 || offset + length > msg.length) {
+      return {
+        present: messageAuthenticatorOffset !== null,
+        valid: false,
+        reason: "invalid_attribute_length",
+      };
+    }
+
+    if (type === MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE) {
+      if (messageAuthenticatorOffset !== null) {
+        return {
+          present: true,
+          valid: false,
+          reason: "duplicate_message_authenticator",
+        };
+      }
+
+      if (length !== MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH) {
+        return {
+          present: true,
+          valid: false,
+          reason: "invalid_message_authenticator_length",
+        };
+      }
+
+      messageAuthenticatorOffset = offset;
+    }
+
+    offset += length;
+  }
+
+  if (messageAuthenticatorOffset === null) {
+    return { present: false, valid: true };
+  }
+
+  const verificationPacket = Buffer.from(msg);
+  verificationPacket.fill(
+    0,
+    messageAuthenticatorOffset + 2,
+    messageAuthenticatorOffset + MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH,
+  );
+
+  // For Access response packets, RFC behavior requires HMAC verification to use
+  // the original Access-Request Authenticator in the packet header field.
+  requestAuthenticator.copy(verificationPacket, 4, 0, 16);
+
+  const expected = crypto
+    .createHmac("md5", Buffer.from(secret, "utf8"))
+    .update(verificationPacket)
+    .digest();
+
+  const actual = msg.subarray(
+    messageAuthenticatorOffset + 2,
+    messageAuthenticatorOffset + MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH,
+  );
+
+  if (!crypto.timingSafeEqual(expected, actual)) {
+    return {
+      present: true,
+      valid: false,
+      reason: "message_authenticator_mismatch",
+    };
+  }
+
+  return { present: true, valid: true };
+}
 
 export async function radiusAuthenticate(
   host: string,
@@ -19,6 +154,12 @@ export async function radiusAuthenticate(
   }
   const port = options.port || 1812;
   const timeoutMs = options.timeoutMs || 5000;
+  const validateResponseSource = options.validateResponseSource !== false;
+  const responseMessageAuthenticatorPolicy: ResponseMessageAuthenticatorPolicy =
+    options.responseMessageAuthenticatorPolicy === "strict" ? "strict" : "compatibility";
+  const expectedSourceHosts = validateResponseSource
+    ? await resolveExpectedSourceHosts(host)
+    : null;
 
   if (logger) logger.debug('[radius] authenticate start', { host, user: username });
 
@@ -77,7 +218,7 @@ export async function radiusAuthenticate(
       resolve({ ok: false, error: 'timeout' });
     }, timeoutMs);
 
-    client.on("message", (msg) => {
+    client.on("message", (msg, remoteInfo) => {
       clearTimeout(timer);
       client.close();
 
@@ -88,16 +229,76 @@ export async function radiusAuthenticate(
         return;
       }
 
+      const declaredLength = msg.readUInt16BE(2);
+      if (declaredLength !== msg.length || declaredLength < 20) {
+        if (logger) {
+          logger.warn('[radius] received malformed response (header length mismatch)', {
+            declaredLength,
+            actualLength: msg.length,
+          });
+        }
+        resolve({ ok: false, raw: msg.toString("hex"), error: 'malformed_response' });
+        return;
+      }
+
+      const responseIdentifier = msg.readUInt8(1);
+      if (responseIdentifier !== id) {
+        if (logger) {
+          logger.warn('[radius] received malformed response (identifier mismatch)', {
+            expected: id,
+            actual: responseIdentifier,
+          });
+        }
+        resolve({ ok: false, raw: msg.toString("hex"), error: 'malformed_response' });
+        return;
+      }
+
+      if (
+        validateResponseSource
+        && expectedSourceHosts
+        && !isResponseSourceValid(remoteInfo, expectedSourceHosts, port)
+      ) {
+        if (logger) {
+          logger.warn('[radius] received response from unexpected source', {
+            expectedHosts: [...expectedSourceHosts],
+            expectedPort: port,
+            actualHost: remoteInfo.address,
+            actualPort: remoteInfo.port,
+          });
+        }
+        resolve({ ok: false, raw: msg.toString("hex"), error: 'malformed_response' });
+        return;
+      }
+
+      const messageAuthenticatorValidation = validateResponseMessageAuthenticator(msg, secret, authenticator);
+      if (messageAuthenticatorValidation.present && !messageAuthenticatorValidation.valid) {
+        if (responseMessageAuthenticatorPolicy === "strict") {
+          if (logger) {
+            logger.warn('[radius] invalid response Message-Authenticator in strict mode; dropping response', {
+              reason: messageAuthenticatorValidation.reason,
+            });
+          }
+          resolve({ ok: false, raw: msg.toString("hex"), error: 'malformed_response' });
+          return;
+        }
+
+        if (logger) {
+          logger.warn('[radius] invalid response Message-Authenticator (compatibility mode)', {
+            reason: messageAuthenticatorValidation.reason,
+          });
+        }
+      }
+
       const code = msg.readUInt8(0);
       // Verify response authenticator per RFC2865 when secret is available to avoid spoofed replies.
       try {
         const respAuth = msg.subarray(4, 20);
         // Recompute: MD5(Code + Identifier + Length + RequestAuthenticator + Attributes + SharedSecret)
         const lenBuf = Buffer.alloc(2);
-        lenBuf.writeUInt16BE(msg.length, 0);
+        lenBuf.writeUInt16BE(declaredLength, 0);
         const toHash = Buffer.concat([
           Buffer.from([msg.readUInt8(0)]),
-          Buffer.from([msg.readUInt8(1)]),
+          Buffer.from([responseIdentifier]),
           lenBuf,
           authenticator, // request authenticator we sent earlier
           msg.subarray(20), // attributes from response
@@ -245,7 +446,7 @@ export async function radiusAuthenticate(
       while (attrOff + 2 <= packet.length) {
         const t = packet.readUInt8(attrOff);
         const l = packet.readUInt8(attrOff + 1);
-        if (t === 80 && l === 18) {
+        if (t === MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE && l === MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH) {
           for (let i = 0; i < 16; i++) packet.writeUInt8(hmac.readUInt8(i), attrOff + 2 + i);
           break;
         }

@@ -60,6 +60,8 @@ export interface RadiusResult {
   error?: string;
 }
 
+export type ResponseMessageAuthenticatorPolicy = "compatibility" | "strict";
+
 export interface RadiusProtocolOptions {
   secret: string;
   port?: number;
@@ -68,6 +70,14 @@ export interface RadiusProtocolOptions {
   vendorId?: number;
   vendorType?: number;
   valuePattern?: string;
+  /** Validate response source host/port against request target host/port (default: true). */
+  validateResponseSource?: boolean;
+  /**
+   * How to handle a present response Message-Authenticator (Type 80).
+   * - compatibility (default): warn on invalid value and continue.
+   * - strict: reject malformed/invalid values.
+   */
+  responseMessageAuthenticatorPolicy?: ResponseMessageAuthenticatorPolicy;
 }
 
 export interface RadiusConfig extends RadiusProtocolOptions {
