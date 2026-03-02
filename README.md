@@ -106,7 +106,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `dynamicAuthorizationPort` | `number` | `3799` | CoA/Disconnect UDP port used by `sendCoa` and `sendDisconnect`. |
 | `timeoutMs` | `number` | `5000` | Request timeout in milliseconds. |
 | `healthCheckIntervalMs` | `number` | `1800000` | (30m) Interval for background health checks. |
-| `healthCheckProbeMode` | `'auth' \| 'status-server'` | `'auth'` | Probe mode for health checks. `'status-server'` sends Status-Server probes (RFC 3539) and falls back to Access-Request auth probes (RFC 2865) for compatibility. |
+| `healthCheckProbeMode` | `'auth' \| 'status-server'` | `'auth'` | Probe mode for health checks. `'status-server'` uses RFC3539-oriented probes (see RFC 3539; also referenced by RFC 2865) and falls back to Access-Request auth probes (RFC 2865) for compatibility. |
 | `healthCheckTimeoutMs` | `number` | `5000` | Timeout for health-check probe requests. |
 | `healthCheckUser` | `string` | (Required) | Username for health probes. |
 | `healthCheckPassword` | `string` | (Required) | Password for health probes. |
