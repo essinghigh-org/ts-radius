@@ -54,7 +54,9 @@ export class RadiusClient {
         assignmentAttributeId: this.config.assignmentAttributeId,
         vendorId: this.config.vendorId,
         vendorType: this.config.vendorType,
-        valuePattern: this.config.valuePattern
+        valuePattern: this.config.valuePattern,
+        validateResponseSource: this.config.validateResponseSource,
+        responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
       };
 
       const result = await radiusAuthenticate(host, username, password, protocolOptions, this.logger);
@@ -216,7 +218,9 @@ export class RadiusClient {
       const protocolOptions = {
         secret: this.config.secret,
         port: port,
-        timeoutMs: timeoutMs
+        timeoutMs: timeoutMs,
+        validateResponseSource: this.config.validateResponseSource,
+        responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
       };
 
       const res = await radiusAuthenticate(host, hcUser, hcPass, protocolOptions, this.logger);
