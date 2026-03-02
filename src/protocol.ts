@@ -1190,6 +1190,18 @@ async function sendDynamicAuthorization(
 
   const port = options.dynamicAuthorizationPort ?? options.port ?? 3799;
   const timeoutMs = options.timeoutMs ?? 5000;
+  const validateResponseSource = options.validateResponseSource !== false;
+
+  const attrs = buildDynamicAuthorizationAttributes(request);
+  const attrBuf = Buffer.concat(attrs);
+  const len = 20 + attrBuf.length;
+  if (len > 0xffff) {
+    throw new Error("[radius] dynamic authorization packet exceeds maximum RADIUS length");
+  }
+
+  const expectedSourceHosts = validateResponseSource
+    ? await resolveExpectedSourceHosts(targetHost)
+    : null;
 
   if (logger) {
     logger.debug("[radius] dynamic-authorization start", {
@@ -1205,13 +1217,6 @@ async function sendDynamicAuthorization(
     const id = crypto.randomBytes(1).readUInt8(0);
     const requestAuthenticator = crypto.randomBytes(16);
 
-    const attrs = buildDynamicAuthorizationAttributes(request);
-    const attrBuf = Buffer.concat(attrs);
-    const len = 20 + attrBuf.length;
-    if (len > 0xffff) {
-      throw new Error("[radius] dynamic authorization packet exceeds maximum RADIUS length");
-    }
-
     const header = Buffer.alloc(20);
     header.writeUInt8(codes.request, 0);
     header.writeUInt8(id, 1);
@@ -1225,7 +1230,23 @@ async function sendDynamicAuthorization(
       resolve({ ok: false, acknowledged: false, error: "timeout" });
     }, timeoutMs);
 
-    client.on("message", (msg) => {
+    client.on("message", (msg, remoteInfo) => {
+      if (
+        validateResponseSource
+        && expectedSourceHosts
+        && !isResponseSourceValid(remoteInfo, expectedSourceHosts, port)
+      ) {
+        if (logger) {
+          logger.warn("[radius] received dynamic authorization response from unexpected source", {
+            expectedHosts: [...expectedSourceHosts],
+            expectedPort: port,
+            actualHost: remoteInfo.address,
+            actualPort: remoteInfo.port,
+          });
+        }
+        return;
+      }
+
       clearTimeout(timer);
       client.close();
 

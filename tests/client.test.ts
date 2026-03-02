@@ -543,6 +543,64 @@ describe('RadiusClient Failover', () => {
     }
   });
 
+  test('releaseHealthOperationLock isolates waiter failures and continues notifying remaining waiters', () => {
+    const warnEntries: Array<{ message: string; args: unknown[] }> = [];
+
+    const logger: Logger = {
+      debug(): void {
+        // Intentionally no-op for tests.
+      },
+      info(): void {
+        // Intentionally no-op for tests.
+      },
+      warn(message: string, ...args: unknown[]): void {
+        warnEntries.push({ message, args });
+      },
+      error(): void {
+        // Intentionally no-op for tests.
+      }
+    };
+
+    const lockClient = new RadiusClient(
+      {
+        ...config,
+        healthCheckIntervalMs: 60000
+      },
+      logger,
+      { protocol: protocolMock }
+    );
+
+    try {
+      const internals = lockClient as unknown as {
+        inProgress: boolean;
+        inProgressWaiters: Array<() => void>;
+        releaseHealthOperationLock: () => void;
+      };
+
+      const invocationOrder: string[] = [];
+      internals.inProgress = true;
+      internals.inProgressWaiters.push(
+        () => {
+          invocationOrder.push('first');
+          throw new Error('waiter exploded');
+        },
+        () => {
+          invocationOrder.push('second');
+        }
+      );
+
+      expect(() => {
+        internals.releaseHealthOperationLock();
+      }).not.toThrow();
+      expect(invocationOrder).toEqual(['first', 'second']);
+      expect(internals.inProgress).toBe(false);
+      expect(internals.inProgressWaiters).toHaveLength(0);
+      expect(warnEntries.some((entry) => entry.message === '[radius-client] health operation waiter threw')).toBe(true);
+    } finally {
+      lockClient.shutdown();
+    }
+  });
+
   test('authenticate treats NaN maxAttempts as one bounded attempt', async () => {
     const retryClient = new RadiusClient({
       ...config,
