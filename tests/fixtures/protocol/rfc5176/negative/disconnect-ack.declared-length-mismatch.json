@@ -1,0 +1,13 @@
+{
+  "name": "rfc5176-disconnect-ack-declared-length-mismatch",
+  "rfc": "RFC5176",
+  "description": "Malformed Disconnect-ACK packet where the header length does not match the actual datagram size.",
+  "packetHex": "29 02 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 31 02",
+  "expected": {
+    "code": 41,
+    "identifier": 2,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": []
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "rfc6929-access-accept-extended-attribute-malformed-empty-value",
+  "rfc": "RFC6929",
+  "description": "Malformed but parseable Access-Accept extended attribute with missing extended type byte.",
+  "packetHex": "02 03 00 16 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f1 02",
+  "expected": {
+    "code": 2,
+    "identifier": 3,
+    "length": 22,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": []
+  }
+}

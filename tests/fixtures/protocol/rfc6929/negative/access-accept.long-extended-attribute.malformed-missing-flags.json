@@ -1,0 +1,13 @@
+{
+  "name": "rfc6929-access-accept-long-extended-attribute-malformed-missing-flags",
+  "rfc": "RFC6929",
+  "description": "Malformed but parseable Access-Accept long-extended attribute with missing flags byte.",
+  "packetHex": "02 04 00 17 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f5 03 0f",
+  "expected": {
+    "code": 2,
+    "identifier": 4,
+    "length": 23,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": []
+  }
+}

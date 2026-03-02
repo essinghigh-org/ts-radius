@@ -1,0 +1,13 @@
+{
+  "name": "rfc2869-access-request-message-authenticator-truncated-value",
+  "rfc": "RFC2869",
+  "description": "Malformed Access-Request with a Message-Authenticator declaring length 18 but carrying only 15 value bytes.",
+  "packetHex": "01 12 00 25 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 50 12 4d 41 2d 42 41 44 2d 53 48 41 50 45 2d 30 31",
+  "expected": {
+    "code": 1,
+    "identifier": 18,
+    "length": 37,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": []
+  }
+}
