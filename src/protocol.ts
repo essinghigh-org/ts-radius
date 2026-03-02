@@ -42,6 +42,13 @@ const SESSION_ACCOUNTING_STATUS_TYPES: ReadonlySet<RadiusSessionAccountingStatus
   "Interim-Update",
 ]);
 
+const MAX_RADIUS_ATTRIBUTE_VALUE_LENGTH = 253;
+const MAX_PAP_PASSWORD_BYTES = 128;
+const MAX_ACCOUNTING_PACKET_LENGTH = 4095;
+const NAS_IP_ADDRESS_ATTRIBUTE_TYPE = 4;
+const NAS_IDENTIFIER_ATTRIBUTE_TYPE = 32;
+const DEFAULT_NAS_IP_ADDRESS_VALUE = Buffer.from([127, 0, 0, 1]);
+
 const UINT32_MASK_BIGINT = 0xffff_ffffn;
 const UINT64_MAX_BIGINT = 0xffff_ffff_ffff_ffffn;
 
@@ -155,7 +162,7 @@ function encodeRadiusAttribute(type: number, value: Buffer): Buffer {
     throw new Error(`[radius] Invalid attribute type: ${String(type)}`);
   }
 
-  if (value.length > 253) {
+  if (value.length > MAX_RADIUS_ATTRIBUTE_VALUE_LENGTH) {
     throw new Error(`[radius] Attribute ${String(type)} value too large`);
   }
 
@@ -192,6 +199,11 @@ function resolveAuthenticationMethod(options: RadiusProtocolOptions): RadiusAuth
 
 function buildPapPasswordValue(password: string, secret: string, authenticator: Buffer): Buffer {
   const passwordBuffer = Buffer.from(password, "utf8");
+
+  if (passwordBuffer.length > MAX_PAP_PASSWORD_BYTES) {
+    throw new Error("[radius] PAP password must be at most 128 bytes");
+  }
+
   const blockCount = Math.ceil(passwordBuffer.length / 16) || 1;
   const paddedPassword = Buffer.alloc(blockCount * 16, 0);
   passwordBuffer.copy(paddedPassword);
@@ -270,7 +282,10 @@ function encodeCustomAttributeValue(
   return encodeRadiusAttribute(attribute.type, attribute.value);
 }
 
-function parseAttributes(packet: Buffer, logger?: Logger): ParsedRadiusAttribute[] {
+function parseAttributes(
+  packet: Buffer,
+  logger?: Logger
+): { attributes: ParsedRadiusAttribute[] } | { error: "malformed_response" } {
   const attributes: ParsedRadiusAttribute[] = [];
   let offset = 20;
 
@@ -279,13 +294,13 @@ function parseAttributes(packet: Buffer, logger?: Logger): ParsedRadiusAttribute
     const l = packet.readUInt8(offset + 1);
 
     if (l < 2) {
-      if (logger) logger.warn("[radius] invalid attribute length < 2; stopping parse");
-      break;
+      if (logger) logger.warn("[radius] invalid attribute length < 2; rejecting response");
+      return { error: "malformed_response" };
     }
 
     if (offset + l > packet.length) {
-      if (logger) logger.warn("[radius] attribute length runs past packet end; stopping parse");
-      break;
+      if (logger) logger.warn("[radius] attribute length runs past packet end; rejecting response");
+      return { error: "malformed_response" };
     }
 
     const value = packet.subarray(offset + 2, offset + l);
@@ -298,7 +313,12 @@ function parseAttributes(packet: Buffer, logger?: Logger): ParsedRadiusAttribute
     offset += l;
   }
 
-  return attributes;
+  if (offset !== packet.length) {
+    if (logger) logger.warn("[radius] response attributes contain a truncated header; rejecting response");
+    return { error: "malformed_response" };
+  }
+
+  return { attributes };
 }
 
 function getResponseLengthValidationPolicy(options: RadiusProtocolOptions): ResponseLengthValidationPolicy {
@@ -458,17 +478,37 @@ function validateAccountingRequest(request: RadiusAccountingRequest): void {
   }
 }
 
+function resolveAccountingSessionId(request: RadiusAccountingRequest): string {
+  if (typeof request.sessionId === "string" && request.sessionId.trim().length > 0) {
+    return request.sessionId;
+  }
+
+  if (requiresAccountingSessionIdentifiers(request.statusType)) {
+    throw new Error("[radius] accounting request.sessionId is required");
+  }
+
+  return `acct-onoff-${String(Date.now())}-${crypto.randomUUID()}`;
+}
+
+function hasAccountingNasIdentifier(request: RadiusAccountingRequest): boolean {
+  return (request.attributes ?? []).some((attribute) =>
+    attribute.type === NAS_IP_ADDRESS_ATTRIBUTE_TYPE || attribute.type === NAS_IDENTIFIER_ATTRIBUTE_TYPE
+  );
+}
+
 function buildAccountingAttributes(request: RadiusAccountingRequest): Buffer[] {
   const attrs: Buffer[] = [];
+  const resolvedSessionId = resolveAccountingSessionId(request);
 
   if (typeof request.username === "string" && request.username.trim().length > 0) {
     attrs.push(encodeStringAttribute(1, request.username));
   }
 
   attrs.push(encodeIntegerAttribute(40, ACCOUNTING_STATUS_VALUES[request.statusType]));
+  attrs.push(encodeStringAttribute(44, resolvedSessionId));
 
-  if (typeof request.sessionId === "string" && request.sessionId.trim().length > 0) {
-    attrs.push(encodeStringAttribute(44, request.sessionId));
+  if (!hasAccountingNasIdentifier(request)) {
+    attrs.push(encodeRadiusAttribute(NAS_IP_ADDRESS_ATTRIBUTE_TYPE, DEFAULT_NAS_IP_ADDRESS_VALUE));
   }
 
   if (request.delayTime !== undefined) {
@@ -999,6 +1039,11 @@ async function radiusAuthenticateRequest(
 
   validateExtractedAssignmentOptions(options);
   const authMethod = resolveAuthenticationMethod(options);
+  const usernameBuffer = Buffer.from(username, "utf8");
+
+  if (usernameBuffer.length > MAX_RADIUS_ATTRIBUTE_VALUE_LENGTH) {
+    throw new Error("[radius] User-Name must encode to at most 253 bytes");
+  }
 
   const port = options.port || 1812;
   const timeoutMs = options.timeoutMs || 5000;
@@ -1019,8 +1064,7 @@ async function radiusAuthenticateRequest(
     const attrs: Buffer[] = [];
 
     // User-Name (type 1)
-    const userBuf = Buffer.from(username, "utf8");
-    attrs.push(Buffer.concat([Buffer.from([1, userBuf.length + 2]), userBuf]));
+    attrs.push(encodeRadiusAttribute(1, usernameBuffer));
 
     if (authMethod === "chap") {
       // CHAP-Password (type 3): 1-octet CHAP identifier + 16-octet MD5 digest.
@@ -1148,7 +1192,6 @@ async function radiusAuthenticateRequest(
         // parse attributes for Class (type 25) - handle multiple classes and validate properly
         let offset = 20;
         let foundClass: string | undefined = undefined;
-        const allClasses: string[] = [];
         const parsedAttributes: ParsedRadiusAttribute[] = [];
 
         while (offset + 2 <= response.length) {
@@ -1157,14 +1200,16 @@ async function radiusAuthenticateRequest(
 
           // Validate attribute length per RFC 2865
           if (l < 2) {
-            if (logger) logger.warn('[radius] invalid attribute length < 2; stopping parse');
-            break;
+            if (logger) logger.warn('[radius] invalid attribute length < 2; rejecting response');
+            resolve({ ok: false, raw: response.toString("hex"), error: "malformed_response" });
+            return;
           }
 
           // ensure attribute does not run past the end of the packet
           if (offset + l > response.length) {
-            if (logger) logger.warn('[radius] attribute length runs past packet end; stopping parse');
-            break;
+            if (logger) logger.warn('[radius] attribute length runs past packet end; rejecting response');
+            resolve({ ok: false, raw: response.toString("hex"), error: "malformed_response" });
+            return;
           }
 
           const value = response.subarray(offset + 2, offset + l);
@@ -1218,7 +1263,6 @@ async function radiusAuthenticateRequest(
           }
 
           if (isTargetAttribute && extractedValue !== undefined) {
-            allClasses.push(extractedValue);
             // Take the first assignment attribute encountered per RFC 2865 implementation choice
             if (!foundClass) {
               foundClass = extractedValue;
@@ -1226,6 +1270,12 @@ async function radiusAuthenticateRequest(
           }
 
           offset += l;
+        }
+
+        if (offset !== response.length) {
+          if (logger) logger.warn('[radius] response attributes contain a truncated header; rejecting response');
+          resolve({ ok: false, raw: response.toString("hex"), error: "malformed_response" });
+          return;
         }
 
         const isOk = code === 2;
@@ -1516,8 +1566,8 @@ export async function radiusAccounting(
   const attrs = buildAccountingAttributes(request);
   const attrBuf = Buffer.concat(attrs);
   const len = 20 + attrBuf.length;
-  if (len > 0xffff) {
-    throw new Error("[radius] accounting packet exceeds maximum RADIUS length");
+  if (len > MAX_ACCOUNTING_PACKET_LENGTH) {
+    throw new Error("[radius] accounting packet exceeds RFC maximum length (4095 bytes)");
   }
 
   if (logger) {
@@ -1592,7 +1642,13 @@ export async function radiusAccounting(
       }
 
       const code = response.readUInt8(0);
-      const parsedAttributes = parseAttributes(response, logger);
+      const parsedAttributesResult = parseAttributes(response, logger);
+      if ("error" in parsedAttributesResult) {
+        resolve({ ok: false, raw: response.toString("hex"), error: parsedAttributesResult.error });
+        return;
+      }
+
+      const parsedAttributes = parsedAttributesResult.attributes;
 
       if (code !== 5) {
         resolve({
@@ -1729,7 +1785,18 @@ async function sendDynamicAuthorization(
       }
 
       const code = response.readUInt8(0);
-      const parsedAttributes = parseAttributes(response, logger);
+      const parsedAttributesResult = parseAttributes(response, logger);
+      if ("error" in parsedAttributesResult) {
+        resolve({
+          ok: false,
+          acknowledged: false,
+          raw: response.toString("hex"),
+          error: parsedAttributesResult.error
+        });
+        return;
+      }
+
+      const parsedAttributes = parsedAttributesResult.attributes;
 
       if (code === codes.ack) {
         resolve({

@@ -60,21 +60,22 @@ function buildAccountingResponsePacket(
   secret: string,
   responseCode = 5,
   tamperAuthenticator = false,
-  responseIdentifier?: number
+  responseIdentifier?: number,
+  attributes: Buffer[] = []
 ): Buffer {
   const identifier = responseIdentifier ?? requestPacket.readUInt8(1);
-  const attributes = Buffer.alloc(0);
+  const attributeBuffer = Buffer.concat(attributes);
 
-  const response = Buffer.alloc(20 + attributes.length);
+  const response = Buffer.alloc(20 + attributeBuffer.length);
   response.writeUInt8(responseCode, 0);
   response.writeUInt8(identifier, 1);
   response.writeUInt16BE(response.length, 2);
-  attributes.copy(response, 20);
+  attributeBuffer.copy(response, 20);
 
   const hashInput = Buffer.concat([
     response.subarray(0, 4),
     requestPacket.subarray(4, 20),
-    attributes,
+    attributeBuffer,
     Buffer.from(secret, "utf8")
   ]);
 
@@ -207,12 +208,15 @@ describe("Accounting protocol", () => {
       expect(readStringAttribute(attributes, 1)).toBe("alice");
       expect(readIntegerAttribute(attributes, 40)).toBe(1);
       expect(readStringAttribute(attributes, 44)).toBe("session-001");
+
+      const nasIpAddress = attributes.get(4)?.[0];
+      expect(nasIpAddress?.equals(Buffer.from([127, 0, 0, 1]))).toBe(true);
     } finally {
       await closeSocket(server);
     }
   });
 
-  test("encodes Accounting-On and Accounting-Off status values without requiring session identifiers", async () => {
+  test("encodes Accounting-On and Accounting-Off status values with generated Acct-Session-Id and NAS-IP-Address", async () => {
     const server = await bindServer();
     const receivedPackets: Buffer[] = [];
 
@@ -265,12 +269,30 @@ describe("Accounting protocol", () => {
       expect(readIntegerAttribute(accountingOffAttributes, 40)).toBe(8);
 
       expect(accountingOnAttributes.has(1)).toBe(false);
-      expect(accountingOnAttributes.has(44)).toBe(false);
+      expect(readStringAttribute(accountingOnAttributes, 44).length).toBeGreaterThan(0);
       expect(accountingOffAttributes.has(1)).toBe(false);
-      expect(accountingOffAttributes.has(44)).toBe(false);
+      expect(readStringAttribute(accountingOffAttributes, 44).length).toBeGreaterThan(0);
+
+      const accountingOnNasIp = accountingOnAttributes.get(4)?.[0];
+      const accountingOffNasIp = accountingOffAttributes.get(4)?.[0];
+
+      expect(accountingOnNasIp?.equals(Buffer.from([127, 0, 0, 1]))).toBe(true);
+      expect(accountingOffNasIp?.equals(Buffer.from([127, 0, 0, 1]))).toBe(true);
     } finally {
       await closeSocket(server);
     }
+  });
+
+  test("uses caller-provided NAS-Identifier and skips NAS-IP-Address fallback", async () => {
+    const attributes = await captureAccountingRequestAttributes({
+      username: "alice",
+      sessionId: "session-nas-identifier",
+      statusType: "Start",
+      attributes: [{ type: 32, value: "edge-nas-01" }]
+    } as RadiusAccountingRequest);
+
+    expect(readStringAttribute(attributes, 32)).toBe("edge-nas-01");
+    expect(attributes.has(4)).toBe(false);
   });
 
   test("supports generic accounting send with additional custom attributes", async () => {
@@ -618,6 +640,80 @@ describe("Accounting protocol", () => {
     }
   });
 
+  test("returns malformed_response when Accounting-Response has attribute length below minimum", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildAccountingResponsePacket(
+        msg,
+        sharedSecret,
+        5,
+        false,
+        undefined,
+        [Buffer.from([18, 1])]
+      );
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-malformed-attr-length",
+          statusType: "Start"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns malformed_response when Accounting-Response attribute overruns packet", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildAccountingResponsePacket(
+        msg,
+        sharedSecret,
+        5,
+        false,
+        undefined,
+        [Buffer.from([18, 10, 0x6f])]
+      );
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-malformed-attr-overrun",
+          statusType: "Start"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("rejects Accounting-Response trailing bytes by default strict length policy", async () => {
     const server = await bindServer();
 
@@ -706,5 +802,22 @@ describe("Accounting protocol", () => {
     } finally {
       await closeSocket(server);
     }
+  });
+
+  test("rejects Accounting-Request packets above RFC maximum length of 4095 bytes", async () => {
+    const oversizedAttributes = Array.from({ length: 16 }, (_, index) => ({
+      type: ((index + 59) % 255) + 1,
+      value: "x".repeat(253)
+    }));
+
+    await expectAccountingRequestRejection(
+      {
+        username: "alice",
+        sessionId: "session-oversized-accounting",
+        statusType: "Start",
+        attributes: oversizedAttributes
+      },
+      "[radius] accounting packet exceeds RFC maximum length (4095 bytes)"
+    );
   });
 });

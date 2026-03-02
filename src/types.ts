@@ -190,7 +190,13 @@ export type RadiusAccountingStatusType = RadiusSessionAccountingStatusType | Rad
 export type RadiusAccountingAttribute = RadiusAttribute;
 
 interface RadiusAccountingRequestFields {
+  /** Optional User-Name (type 1). Required for Start/Stop/Interim-Update. */
   username?: string;
+  /**
+   * Acct-Session-Id (type 44).
+   * Required for Start/Stop/Interim-Update.
+   * For Accounting-On/Accounting-Off, a session ID is auto-generated when omitted.
+   */
   sessionId?: string;
   sessionTime?: number;
   inputOctets?: number;
@@ -211,6 +217,11 @@ interface RadiusAccountingRequestFields {
   outputPackets?: number;
   delayTime?: number;
   terminateCause?: number;
+  /**
+   * Additional accounting attributes.
+   * If neither NAS-IP-Address (4) nor NAS-Identifier (32) is supplied,
+   * a default NAS-IP-Address value of 127.0.0.1 is injected.
+   */
   attributes?: RadiusAccountingAttribute[];
 }
 

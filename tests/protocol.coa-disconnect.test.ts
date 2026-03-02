@@ -649,6 +649,36 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
+  test("returns malformed_response when CoA-ACK contains attribute length below minimum", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44, [Buffer.from([18, 1])]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-malformed-attr-length"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("returns malformed_response for Disconnect length mismatch responses", async () => {
     const server = await bindServer();
 
@@ -664,6 +694,36 @@ describe("CoA/Disconnect protocol", () => {
         {
           username: "alice",
           sessionId: "session-length-mismatch"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns malformed_response when Disconnect-ACK attribute overruns packet", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 41, [Buffer.from([18, 10, 0x6f])]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusDisconnect(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-malformed-attr-overrun"
         },
         {
           secret: sharedSecret,
