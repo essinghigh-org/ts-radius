@@ -46,6 +46,8 @@ const SESSION_ACCOUNTING_STATUS_TYPES: ReadonlySet<RadiusSessionAccountingStatus
 
 const MAX_RADIUS_ATTRIBUTE_VALUE_LENGTH = 253;
 const MAX_PAP_PASSWORD_BYTES = 128;
+const MAX_AUTHENTICATION_PACKET_LENGTH = 4096;
+const MAX_STATUS_SERVER_PACKET_LENGTH = 4096;
 const MAX_ACCOUNTING_PACKET_LENGTH = 4095;
 const MAX_DYNAMIC_AUTHORIZATION_PACKET_LENGTH = 4096;
 const NAS_IP_ADDRESS_ATTRIBUTE_TYPE = 4;
@@ -1248,7 +1250,12 @@ async function radiusAuthenticateRequest(
       clearTimeout(timer);
       client.close();
 
-      const packetValidation = validateResponsePacket(msg, options, logger);
+      const packetValidation = validateResponsePacket(
+        msg,
+        options,
+        logger,
+        MAX_AUTHENTICATION_PACKET_LENGTH
+      );
       if ("error" in packetValidation) {
         resolve({ ok: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;
@@ -1601,7 +1608,12 @@ export async function radiusStatusServerProbe(
       clearTimeout(timer);
       client.close();
 
-      const packetValidation = validateResponsePacket(msg, options, logger);
+      const packetValidation = validateResponsePacket(
+        msg,
+        options,
+        logger,
+        MAX_STATUS_SERVER_PACKET_LENGTH
+      );
       if ("error" in packetValidation) {
         resolve({ ok: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;

@@ -54,6 +54,12 @@ function appendTrailingBytes(packet: Buffer): Buffer {
   return Buffer.concat([packet, Buffer.from([0xde, 0xad, 0xbe, 0xef])]);
 }
 
+function buildOversizedResponseAttributes(): Buffer[] {
+  return Array.from({ length: 16 }, () =>
+    Buffer.concat([Buffer.from([18, 255]), Buffer.alloc(253, 0x61)])
+  );
+}
+
 async function bindSocket(socket: Socket): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     const onError = (error: Error) => {
@@ -139,6 +145,19 @@ describe("radiusStatusServerProbe hardening", () => {
         response.writeUInt16BE(response.length + 1, 2);
         return response;
       },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("malformed_response");
+  });
+
+  test("returns malformed_response when Status-Server response exceeds RFC maximum length of 4096 bytes", async () => {
+    const result = await runStatusProbeScenario({
+      responseBuilder: (requestPacket) =>
+        buildStatusServerResponsePacket({
+          requestPacket,
+          attributes: buildOversizedResponseAttributes(),
+        }),
     });
 
     expect(result.ok).toBe(false);
