@@ -269,6 +269,98 @@ describe('RadiusClient Failover', () => {
     retryClient.shutdown();
   });
 
+  test('authenticate treats NaN maxAttempts as one bounded attempt', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: Number.NaN,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    });
+
+    responsiveHosts = new Set();
+    authCalls = [];
+
+    const result = await retryClient.authenticate('nan-max-attempts-user', 'retry-pass');
+    const retryUserCalls = authCalls.filter((call) => call.username === 'nan-max-attempts-user');
+
+    expect(retryUserCalls).toHaveLength(1);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+
+    retryClient.shutdown();
+  });
+
+  test('authenticate treats Infinity maxAttempts as one bounded attempt', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: Number.POSITIVE_INFINITY,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    });
+
+    responsiveHosts = new Set();
+    authCalls = [];
+
+    const makeHostResponsiveTimer = setTimeout(() => {
+      responsiveHosts = new Set(['10.0.0.1']);
+    }, 5);
+
+    try {
+      const result = await retryClient.authenticate('infinity-max-attempts-user', 'retry-pass');
+      const retryUserCalls = authCalls.filter((call) => call.username === 'infinity-max-attempts-user');
+
+      expect(retryUserCalls).toHaveLength(1);
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('timeout');
+    } finally {
+      clearTimeout(makeHostResponsiveTimer);
+      retryClient.shutdown();
+    }
+  });
+
+  test('authenticate sanitizes non-finite retry delay values', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: Number.NaN,
+        backoffMultiplier: Number.NaN,
+        maxDelayMs: Number.NaN,
+        jitterRatio: Number.NaN
+      }
+    });
+
+    responsiveHosts = new Set();
+    authCalls = [];
+
+    const startedAt = Date.now();
+    const result = await retryClient.authenticate('non-finite-delay-user', 'retry-pass');
+    const elapsedMs = Date.now() - startedAt;
+
+    const retryUserCalls = authCalls.filter((call) => call.username === 'non-finite-delay-user');
+
+    expect(retryUserCalls).toHaveLength(2);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+    expect(elapsedMs).toBeGreaterThanOrEqual(60);
+
+    retryClient.shutdown();
+  });
+
   test('authenticate applies jitter to retry backoff delay', async () => {
     const originalRandom = Math.random;
     Math.random = () => 1;

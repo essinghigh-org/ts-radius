@@ -50,6 +50,9 @@ export class RadiusClient {
     const timeoutMs = this.config.timeoutMs || 5000;
     const port = this.config.port || 1812;
     const retryPolicy = this.getRetryPolicy();
+    const maxAttempts = Number.isFinite(retryPolicy.maxAttempts)
+      ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
+      : 1;
 
     // Create a config object for the protocol layer
     const protocolOptions = {
@@ -64,23 +67,23 @@ export class RadiusClient {
 
     let lastResult: RadiusResult = { ok: false, error: 'timeout' };
 
-    for (let attempt = 1; attempt <= retryPolicy.maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const host = this.getActiveHost();
 
       this.logger.debug('[radius-client] authenticate start', {
         host,
         user: username,
         attempt,
-        maxAttempts: retryPolicy.maxAttempts
+        maxAttempts
       });
 
       try {
         const result = await radiusAuthenticate(host, username, password, protocolOptions, this.logger);
         lastResult = result;
 
-        if (result.ok || !this.isRetryableAuthFailure(result) || attempt >= retryPolicy.maxAttempts) {
+        if (result.ok || !this.isRetryableAuthFailure(result) || attempt >= maxAttempts) {
           if (!result.ok && result.error === 'timeout') {
-            this.logger.warn('[radius-client] auth timeout detected', { host, attempt, maxAttempts: retryPolicy.maxAttempts });
+            this.logger.warn('[radius-client] auth timeout detected', { host, attempt, maxAttempts });
             // Trigger failover check asynchronously to preserve legacy health behavior.
             this.onAuthTimeout().catch((error: unknown) => { this.logger.warn('[radius-client] onAuthTimeout error', error); });
           }
@@ -91,7 +94,7 @@ export class RadiusClient {
         this.logger.warn('[radius-client] auth transport failure; trying in-call failover before retry', {
           host,
           attempt,
-          maxAttempts: retryPolicy.maxAttempts,
+          maxAttempts,
           error: result.error
         });
         await this.failover();
@@ -101,7 +104,7 @@ export class RadiusClient {
           this.logger.debug('[radius-client] waiting before retry', {
             delayMs: retryDelayMs,
             nextAttempt: attempt + 1,
-            maxAttempts: retryPolicy.maxAttempts
+            maxAttempts
           });
           await Bun.sleep(retryDelayMs);
         }
@@ -116,11 +119,11 @@ export class RadiusClient {
 
   private getRetryPolicy(): RetryPolicy {
     const retry = this.config.retry;
-    const maxAttempts = Math.floor(retry?.maxAttempts ?? 1);
-    const initialDelayMs = retry?.initialDelayMs ?? 100;
-    const backoffMultiplier = retry?.backoffMultiplier ?? 2;
-    const maxDelayMs = retry?.maxDelayMs ?? 5000;
-    const jitterRatio = retry?.jitterRatio ?? 0;
+    const maxAttempts = Math.floor(this.getFiniteRetryNumber(retry?.maxAttempts, 1));
+    const initialDelayMs = this.getFiniteRetryNumber(retry?.initialDelayMs, 100);
+    const backoffMultiplier = this.getFiniteRetryNumber(retry?.backoffMultiplier, 2);
+    const maxDelayMs = this.getFiniteRetryNumber(retry?.maxDelayMs, 5000);
+    const jitterRatio = this.getFiniteRetryNumber(retry?.jitterRatio, 0);
 
     return {
       maxAttempts: Math.max(1, maxAttempts),
@@ -129,6 +132,14 @@ export class RadiusClient {
       maxDelayMs: Math.max(0, maxDelayMs),
       jitterRatio: Math.max(0, Math.min(1, jitterRatio))
     };
+  }
+
+  private getFiniteRetryNumber(value: number | undefined, fallback: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fallback;
+    }
+
+    return value;
   }
 
   private getRetryDelayMs(attempt: number, retryPolicy: RetryPolicy): number {
@@ -141,7 +152,12 @@ export class RadiusClient {
       ? 1 + ((Math.random() * 2 - 1) * retryPolicy.jitterRatio)
       : 1;
 
-    return Math.max(0, Math.round(baseDelay * jitterMultiplier));
+    const jitteredDelay = baseDelay * jitterMultiplier;
+    if (!Number.isFinite(jitteredDelay)) {
+      return retryPolicy.maxDelayMs;
+    }
+
+    return Math.min(retryPolicy.maxDelayMs, Math.max(0, Math.round(jitteredDelay)));
   }
 
   private isRetryableAuthFailure(result: RadiusResult): boolean {
