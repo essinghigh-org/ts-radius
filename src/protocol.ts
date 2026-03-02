@@ -1129,7 +1129,7 @@ export async function radiusContinueAuthenticate(
     return toMalformedChallengeContextResult({ ok: false, error: "malformed_challenge_context" }, logger);
   }
 
-  if (normalizedContext.round >= normalizedContext.maxRounds) {
+  if (normalizedContext.round > normalizedContext.maxRounds) {
     if (logger) {
       logger.warn("[radius] Access-Challenge continuation blocked by max rounds safeguard", {
         round: normalizedContext.round,

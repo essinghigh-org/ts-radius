@@ -181,6 +181,8 @@ describe("Access-Challenge continuation API", () => {
         "alice",
         "password",
         protocolOptions,
+        undefined,
+        { maxChallengeRounds: 1 },
       );
 
       expect(challengeResult.ok).toBe(false);
@@ -188,7 +190,7 @@ describe("Access-Challenge continuation API", () => {
       expect(challengeResult.challenge).toEqual({
         username: "alice",
         round: 1,
-        maxRounds: 3,
+        maxRounds: 1,
         state: stateHex,
         proxyState: proxyStateHex,
       });
@@ -210,6 +212,7 @@ describe("Access-Challenge continuation API", () => {
 
       expect(observedContinuationState).toEqual([stateHex]);
       expect(observedContinuationProxyState).toEqual(proxyStateHex);
+      expect(requestCount).toBe(2);
     } finally {
       await closeSocket(server);
     }
@@ -255,11 +258,15 @@ describe("Access-Challenge continuation API", () => {
         "alice",
         "password",
         protocolOptions,
+        undefined,
+        { maxChallengeRounds: 1 },
       );
 
       if (!firstStep.challenge) {
         throw new Error("Expected challenge context");
       }
+
+      expect(firstStep.challenge.round).toBe(firstStep.challenge.maxRounds);
 
       const secondStep = await radiusContinueAuthenticate(
         TEST_HOST,
@@ -271,6 +278,7 @@ describe("Access-Challenge continuation API", () => {
       expect(secondStep.ok).toBe(false);
       expect(secondStep.error).toBe("access_reject");
       expect(secondStep.challenge).toBeUndefined();
+      expect(requestCount).toBe(2);
     } finally {
       await closeSocket(server);
     }
@@ -336,7 +344,7 @@ describe("Access-Challenge continuation API", () => {
     expect(result.error).toBe("malformed_challenge_context");
   });
 
-  test("enforces max challenge rounds safeguard", async () => {
+  test("rejects when continuation response would exceed max challenge rounds", async () => {
     const server = dgram.createSocket("udp4");
     let requestCount = 0;
 
@@ -388,6 +396,7 @@ describe("Access-Challenge continuation API", () => {
       expect(secondStep.ok).toBe(false);
       expect(secondStep.error).toBe("challenge_round_limit_exceeded");
       expect(secondStep.challenge).toBeUndefined();
+      expect(requestCount).toBe(2);
     } finally {
       await closeSocket(server);
     }
