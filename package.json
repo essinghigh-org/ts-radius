@@ -31,6 +31,7 @@
     "@eslint/js": "^10.0.1",
     "@types/bun": "latest",
     "@types/node": "^25.2.3",
+    "ajv": "^8.18.0",
     "eslint": "^10.0.2",
     "globals": "^17.4.0",
     "typescript": "^5.9.3",

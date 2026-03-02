@@ -3,6 +3,9 @@ import path from "node:path";
 import { inspect } from "node:util";
 import { fileURLToPath } from "node:url";
 
+import Ajv from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+
 import { decodeAttribute } from "../../src/helpers";
 import type { ParsedRadiusAttribute } from "../../src/types";
 
@@ -40,54 +43,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURES_ROOT = path.resolve(__dirname, "..", "fixtures");
 const FIXTURES_ROOT_REALPATH = realpathSync(FIXTURES_ROOT);
+const FIXTURE_SCHEMA_RELATIVE_PATH = "schema/radius-packet-fixture.schema.json";
+const fixtureSchemaValidator = createFixtureSchemaValidator();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-    return typeof value === "number" && Number.isFinite(value);
-}
-
-function isString(value: unknown): value is string {
-    return typeof value === "string";
-}
-
-function isPacketAttributeExpectation(value: unknown): value is PacketAttributeExpectation {
-    if (!isRecord(value)) {
-        return false;
-    }
-
-    return isFiniteNumber(value.id)
-        && isString(value.name)
-        && isString(value.rawHex)
-        && "decodedValue" in value;
-}
-
-function isRadiusPacketFixture(value: unknown): value is RadiusPacketFixture {
-    if (!isRecord(value)) {
-        return false;
-    }
-
-    if (!isString(value.name) || !isString(value.rfc) || !isString(value.description) || !isString(value.packetHex)) {
-        return false;
-    }
-
-    if (!isRecord(value.expected)) {
-        return false;
-    }
-
-    const expected = value.expected;
-
-    if (!isFiniteNumber(expected.code)
-        || !isFiniteNumber(expected.identifier)
-        || !isFiniteNumber(expected.length)
-        || !isString(expected.authenticatorHexPattern)
-        || !Array.isArray(expected.attributes)) {
-        return false;
-    }
-
-    return expected.attributes.every(isPacketAttributeExpectation);
 }
 
 function normalizeHex(value: string): string {
@@ -125,6 +85,35 @@ function resolveFixturePath(relativePath: string): string {
     }
 
     return fixtureRealPath;
+}
+
+function formatSchemaValidationErrors(errors: readonly ErrorObject[] | null | undefined): string {
+    if (!errors || errors.length === 0) {
+        return "unknown validation error";
+    }
+
+    return errors
+        .map((error) => {
+            const location = error.instancePath.length === 0 ? "/" : error.instancePath;
+            const message = error.message ?? "is invalid";
+
+            return `${location} ${message}`;
+        })
+        .join("; ");
+}
+
+function createFixtureSchemaValidator(): ValidateFunction {
+    const schemaPath = resolveFixturePath(FIXTURE_SCHEMA_RELATIVE_PATH);
+    const schemaText = readFileSync(schemaPath, "utf8");
+    const schema = JSON.parse(schemaText) as unknown;
+
+    if (!isRecord(schema)) {
+        throw new Error(`Fixture schema must be a JSON object: ${FIXTURE_SCHEMA_RELATIVE_PATH}`);
+    }
+
+    const ajv = new Ajv({ allErrors: true, strict: true });
+
+    return ajv.compile(schema);
 }
 
 function decodedArraysMatch(actual: unknown[], expected: unknown[]): boolean {
@@ -213,11 +202,13 @@ export function loadRadiusPacketFixture(relativePath: string): RadiusPacketFixtu
     const fixtureContent = readFileSync(fixturePath, "utf8");
     const parsed = JSON.parse(fixtureContent) as unknown;
 
-    if (!isRadiusPacketFixture(parsed)) {
-        throw new Error(`Invalid fixture format: ${relativePath}`);
+    if (!fixtureSchemaValidator(parsed)) {
+        const details = formatSchemaValidationErrors(fixtureSchemaValidator.errors);
+
+        throw new Error(`Fixture schema validation failed: ${relativePath}: ${details}`);
     }
 
-    return parsed;
+    return parsed as RadiusPacketFixture;
 }
 
 export function hexToBuffer(hex: string): Buffer {
