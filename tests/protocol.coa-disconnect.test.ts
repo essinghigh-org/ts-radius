@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { radiusCoa, radiusDisconnect } from "../src/protocol";
 import type { RadiusCoaRequest, RadiusDisconnectRequest } from "../src/types";
 
-type DynamicAuthorizationResponseCode = 41 | 42 | 44 | 45;
+type DynamicAuthorizationResponseCode = number;
 
 function encodeStringAttribute(type: number, value: string): Buffer {
   const encodedValue = Buffer.from(value, "utf8");
@@ -273,6 +273,160 @@ describe("CoA/Disconnect protocol", () => {
       expect(result.error).toBe("disconnect_nak");
       expect(result.errorCause).toBe(504);
       expect(result.attributes?.find((attribute) => attribute.id === 101)?.value).toBe(504);
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects CoA responses with identifier mismatch", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44);
+      response.writeUInt8((response.readUInt8(1) + 1) % 256, 1);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-id-mismatch"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("identifier_mismatch");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects Disconnect responses with authenticator mismatch", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 41);
+      response.writeUInt8(response.readUInt8(4) ^ 0xff, 4);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusDisconnect(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-auth-mismatch"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("authenticator_mismatch");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns malformed_response for short CoA responses", async () => {
+    const server = await bindServer();
+
+    server.on("message", (_, rinfo) => {
+      server.send(Buffer.from([44, 1, 0, 20]), rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-short-response"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns malformed_response for Disconnect length mismatch responses", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 41);
+      response.writeUInt16BE(response.length + 1, 2);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusDisconnect(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-length-mismatch"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("returns unknown_code for CoA responses with unexpected response code", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 60, [
+        encodeStringAttribute(18, "unexpected")
+      ]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-unknown-code"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("unknown_code");
     } finally {
       await closeSocket(server);
     }

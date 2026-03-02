@@ -93,6 +93,7 @@ describe('RadiusClient Failover', () => {
     host: '10.0.0.1',
     hosts: ['10.0.0.1', '10.0.0.2', '10.0.0.3'],
     secret: 'secret',
+    port: 1812,
     timeoutMs: 100,
     healthCheckIntervalMs: 1000,
     healthCheckTimeoutMs: 100,
@@ -316,9 +317,10 @@ describe('RadiusClient Failover', () => {
     expect(call.logger).toBeDefined();
   });
 
-  test('sendCoa timeout triggers failover probing', async () => {
+  test('sendCoa timeout triggers failover using dynamic-authorization reachability', async () => {
     responsiveCoaHosts = new Set(['10.0.0.2']);
-    responsiveHosts = new Set(['10.0.0.2']);
+    // Keep auth healthy on the current host to verify we are not using auth probing.
+    responsiveHosts = new Set(['10.0.0.1']);
 
     const result = await client.sendCoa({
       username: 'alice',
@@ -332,6 +334,26 @@ describe('RadiusClient Failover', () => {
       () => client.getActiveHost() === '10.0.0.2',
       Math.max(healthTimeoutMs * 3, 250),
       'Expected active host to fail over to 10.0.0.2 after CoA timeout'
+    );
+  });
+
+  test('sendDisconnect timeout triggers failover using dynamic-authorization reachability', async () => {
+    responsiveDisconnectHosts = new Set(['10.0.0.2']);
+    // Keep auth healthy on the current host to verify we are not using auth probing.
+    responsiveHosts = new Set(['10.0.0.1']);
+
+    const result = await client.sendDisconnect({
+      username: 'alice',
+      sessionId: 'session-disconnect-timeout'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+
+    await waitForCondition(
+      () => client.getActiveHost() === '10.0.0.2',
+      Math.max(healthTimeoutMs * 3, 250),
+      'Expected active host to fail over to 10.0.0.2 after Disconnect timeout'
     );
   });
 });

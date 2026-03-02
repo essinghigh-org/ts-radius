@@ -17,6 +17,8 @@ interface HostHealth {
   consecutiveFailures: number;
 }
 
+type ProbeMode = "auth" | "coa" | "disconnect";
+
 export class RadiusClient {
   private config: RadiusConfig;
   private logger: Logger;
@@ -84,7 +86,7 @@ export class RadiusClient {
   public async sendCoa(request: RadiusCoaRequest): Promise<RadiusCoaResult> {
     const host = this.getActiveHost();
     const timeoutMs = this.config.timeoutMs || 5000;
-    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort || this.config.port || 3799;
+    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
 
     this.logger.debug("[radius-client] coa start", {
       host,
@@ -108,8 +110,8 @@ export class RadiusClient {
           username: request.username,
           sessionId: request.sessionId
         });
-        this.onAuthTimeout().catch((error: unknown) => {
-          this.logger.warn("[radius-client] onAuthTimeout error", error);
+        this.onDynamicAuthorizationTimeout("coa").catch((error: unknown) => {
+          this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
         });
       }
 
@@ -123,7 +125,7 @@ export class RadiusClient {
   public async sendDisconnect(request: RadiusDisconnectRequest): Promise<RadiusDisconnectResult> {
     const host = this.getActiveHost();
     const timeoutMs = this.config.timeoutMs || 5000;
-    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort || this.config.port || 3799;
+    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
 
     this.logger.debug("[radius-client] disconnect start", {
       host,
@@ -147,8 +149,8 @@ export class RadiusClient {
           username: request.username,
           sessionId: request.sessionId
         });
-        this.onAuthTimeout().catch((error: unknown) => {
-          this.logger.warn("[radius-client] onAuthTimeout error", error);
+        this.onDynamicAuthorizationTimeout("disconnect").catch((error: unknown) => {
+          this.logger.warn("[radius-client] onDynamicAuthorizationTimeout error", error);
         });
       }
 
@@ -254,7 +256,7 @@ export class RadiusClient {
     }
   }
 
-  public async failover(): Promise<string | null> {
+  public async failover(mode: ProbeMode = "auth"): Promise<string | null> {
     if (this.inProgress) return null;
     this.inProgress = true;
     try {
@@ -263,7 +265,7 @@ export class RadiusClient {
       const ordered = [...this.hosts.slice(startIndex), ...this.hosts.slice(0, startIndex)];
       for (const host of ordered) {
         if (host === this.activeHost) continue;
-        const ok = await this.probeHost(host);
+        const ok = await this.probeHostForMode(host, mode);
         if (ok) {
           this.setActiveHost(host, 'failover');
           return host;
@@ -276,6 +278,14 @@ export class RadiusClient {
     } finally {
       this.inProgress = false;
     }
+  }
+
+  private async probeHostForMode(host: string, mode: ProbeMode): Promise<boolean> {
+    if (mode === "auth") {
+      return this.probeHost(host);
+    }
+
+    return this.probeDynamicAuthorizationHost(host, mode);
   }
 
   private async probeHost(host: string): Promise<boolean> {
@@ -337,6 +347,74 @@ export class RadiusClient {
     }
   }
 
+  private async probeDynamicAuthorizationHost(host: string, mode: "coa" | "disconnect"): Promise<boolean> {
+    const hcUser = this.config.healthCheckUser;
+    const timeoutMs = this.config.healthCheckTimeoutMs || 5000;
+    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort ?? 3799;
+
+    const existingEntry = this.health.get(host);
+    const entry = existingEntry ?? {
+      host,
+      lastOkAt: null,
+      lastTriedAt: null,
+      consecutiveFailures: 0,
+    };
+
+    if (!existingEntry) {
+      this.health.set(host, entry);
+    }
+
+    entry.lastTriedAt = Date.now();
+
+    try {
+      this.logger.debug('[radius-client] probing host dynamic authorization', { host, mode, port: dynamicAuthorizationPort });
+
+      const protocolOptions = {
+        secret: this.config.secret,
+        port: dynamicAuthorizationPort,
+        dynamicAuthorizationPort,
+        timeoutMs,
+      };
+
+      const request = {
+        username: hcUser,
+      };
+
+      const res = mode === "coa"
+        ? await radiusCoa(host, request, protocolOptions, this.logger)
+        : await radiusDisconnect(host, request, protocolOptions, this.logger);
+
+      if (res.ok) {
+        entry.lastOkAt = Date.now();
+        entry.consecutiveFailures = 0;
+        this.logger.debug('[radius-client] dynamic probe success', { host, mode });
+        return true;
+      }
+
+      if (
+        res.error === 'timeout'
+        || res.error === 'malformed_response'
+        || res.error === 'identifier_mismatch'
+        || res.error === 'authenticator_mismatch'
+      ) {
+        entry.consecutiveFailures++;
+        this.logger.debug('[radius-client] dynamic probe failed', { host, mode, error: res.error });
+        return false;
+      }
+
+      // A protocol-level response (NAK/unknown) still indicates dynamic-authorization reachability.
+      entry.lastOkAt = Date.now();
+      entry.consecutiveFailures = 0;
+      this.logger.debug('[radius-client] dynamic probe negative response (server alive)', { host, mode, error: res.error });
+      return true;
+
+    } catch (e) {
+      entry.consecutiveFailures++;
+      this.logger.debug('[radius-client] dynamic probe exception', { host, mode, error: (e as Error).message });
+      return false;
+    }
+  }
+
   // Called when an authentication attempt times out to opportunistically verify active host
   private async onAuthTimeout() {
     this.logger.warn('[radius-client] auth timeout detected; probing active host');
@@ -345,6 +423,16 @@ export class RadiusClient {
       if (!alive) await this.failover();
     } else {
       await this.backgroundHealthCycle();
+    }
+  }
+
+  private async onDynamicAuthorizationTimeout(mode: "coa" | "disconnect") {
+    this.logger.warn('[radius-client] dynamic authorization timeout detected; probing active host', { mode });
+    if (this.activeHost) {
+      const alive = await this.probeHostForMode(this.activeHost, mode);
+      if (!alive) await this.failover(mode);
+    } else {
+      await this.failover(mode);
     }
   }
 }
