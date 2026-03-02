@@ -45,9 +45,40 @@ export interface RadiusResult {
   error?: string;
 }
 
+export interface RadiusDynamicAuthorizationAttribute {
+  type: number;
+  value: string | number | Buffer;
+}
+
+export interface RadiusDynamicAuthorizationRequestBase {
+  /** Optional session identification attribute (User-Name / type 1) */
+  username?: string;
+  /** Optional session identification attribute (Acct-Session-Id / type 44) */
+  sessionId?: string;
+  /** Additional RADIUS attributes for identification and/or authorization changes */
+  attributes?: RadiusDynamicAuthorizationAttribute[];
+}
+
+export type RadiusCoaRequest = RadiusDynamicAuthorizationRequestBase;
+
+export type RadiusDisconnectRequest = RadiusDynamicAuthorizationRequestBase;
+
+export interface RadiusDynamicAuthorizationResult {
+  ok: boolean;
+  acknowledged: boolean;
+  attributes?: ParsedRadiusAttribute[];
+  raw?: string;
+  error?: string;
+  errorCause?: number;
+}
+
+export type RadiusCoaResult = RadiusDynamicAuthorizationResult;
+export type RadiusDisconnectResult = RadiusDynamicAuthorizationResult;
+
 export interface RadiusProtocolOptions {
   secret: string;
   port?: number;
+  dynamicAuthorizationPort?: number;
   timeoutMs?: number;
   assignmentAttributeId?: number;
   vendorId?: number;

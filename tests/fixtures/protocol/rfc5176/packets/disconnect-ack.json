@@ -1,0 +1,20 @@
+{
+  "name": "disconnect-ack",
+  "rfc": "RFC5176",
+  "description": "Disconnect-ACK packet with Acct-Terminate-Cause Admin-Reset (6).",
+  "packetHex": "29 01 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 31 06 00 00 00 06",
+  "expected": {
+    "code": 41,
+    "identifier": 1,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 49,
+        "name": "Acct-Terminate-Cause",
+        "rawHex": "00000006",
+        "decodedValue": 6
+      }
+    ]
+  }
+}

@@ -5,6 +5,7 @@ A standards-compliant RADIUS client for TypeScript/Bun, extracted from a product
 ## Features
 
 - **Standards Compliant**: Supports RFC 2865 (PAP authentication) and RFC 2869.
+- **Dynamic Authorization**: Supports RFC 5176 CoA and Disconnect requests (ACK/NAK + Error-Cause).
 - **Failover**: Automatic failover to backup hosts on timeout.
 - **Health Checks**: Background health checks to restore primary hosts.
 - **Configurable**: extensive configuration for timeouts, retries, and attribute extraction.
@@ -44,6 +45,27 @@ try {
   } else {
     console.log("Authentication failed:", result.error || "Unknown error");
   }
+
+  // Change-of-Authorization (UDP/3799 by default)
+  const coaResult = await client.sendCoa({
+    username: "username",
+    sessionId: "acct-session-id",
+    attributes: [{ type: 11, value: "new-filter" }],
+  });
+
+  if (!coaResult.ok) {
+    console.log("CoA failed", coaResult.error, coaResult.errorCause);
+  }
+
+  // Disconnect a session
+  const disconnectResult = await client.sendDisconnect({
+    username: "username",
+    sessionId: "acct-session-id",
+  });
+
+  if (!disconnectResult.ok) {
+    console.log("Disconnect failed", disconnectResult.error, disconnectResult.errorCause);
+  }
 } catch (err) {
   console.error("Client error:", err);
 } finally {
@@ -60,6 +82,7 @@ try {
 | `hosts` | `string[]` | `[host]` | Ordered list of hosts for failover. |
 | `secret` | `string` | (Required) | Shared secret. |
 | `port` | `number` | `1812` | RADIUS port. |
+| `dynamicAuthorizationPort` | `number` | `3799` | CoA/Disconnect UDP port. |
 | `timeoutMs` | `number` | `5000` | Request timeout in milliseconds. |
 | `healthCheckIntervalMs` | `number` | `1800000` | (30m) Interval for background health checks. |
 | `healthCheckUser` | `string` | (Required) | Username for health probes. |

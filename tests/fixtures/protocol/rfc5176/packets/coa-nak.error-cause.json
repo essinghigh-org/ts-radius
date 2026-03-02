@@ -1,0 +1,20 @@
+{
+  "name": "coa-nak-error-cause",
+  "rfc": "RFC5176",
+  "description": "CoA-NAK packet carrying Error-Cause 503 (Session Context Not Found).",
+  "packetHex": "2d 01 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 06 00 00 01 f7",
+  "expected": {
+    "code": 45,
+    "identifier": 1,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 101,
+        "name": "Error-Cause",
+        "rawHex": "000001f7",
+        "decodedValue": 503
+      }
+    ]
+  }
+}

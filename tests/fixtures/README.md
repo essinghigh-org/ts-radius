@@ -4,6 +4,7 @@ Deterministic RFC-driven packet vectors live under:
 
 - `tests/fixtures/protocol/rfc2865/packets/`
 - `tests/fixtures/protocol/rfc2869/packets/`
+- `tests/fixtures/protocol/rfc5176/packets/`
 
 ### Fixture format
 

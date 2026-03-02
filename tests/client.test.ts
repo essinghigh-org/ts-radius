@@ -1,15 +1,37 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { RadiusClient } from '../src/client';
-import type { RadiusConfig, RadiusResult, RadiusProtocolOptions } from '../src/types';
+import type {
+  RadiusCoaRequest,
+  RadiusCoaResult,
+  RadiusConfig,
+  RadiusDisconnectRequest,
+  RadiusDisconnectResult,
+  RadiusProtocolOptions,
+  RadiusResult
+} from '../src/types';
 
 // State for mock
 let responsiveHosts: Set<string> = new Set();
 // Hosts that return Access-Reject (still alive)
 let rejectingHosts: Set<string> = new Set();
+let responsiveCoaHosts: Set<string> = new Set();
+let responsiveDisconnectHosts: Set<string> = new Set();
 let authCalls: {
   host: string;
   username: string;
   password: string;
+  options: RadiusProtocolOptions;
+  logger: unknown;
+}[] = [];
+let coaCalls: {
+  host: string;
+  request: RadiusCoaRequest;
+  options: RadiusProtocolOptions;
+  logger: unknown;
+}[] = [];
+let disconnectCalls: {
+  host: string;
+  request: RadiusDisconnectRequest;
   options: RadiusProtocolOptions;
   logger: unknown;
 }[] = [];
@@ -34,6 +56,34 @@ void mock.module('../src/protocol', () => ({
       return { ok: false, error: 'timeout' };
     }
     return { ok: true };
+  },
+  radiusCoa: async (
+    host: string,
+    request: RadiusCoaRequest,
+    options: RadiusProtocolOptions,
+    logger?: unknown
+  ): Promise<RadiusCoaResult> => {
+    coaCalls.push({ host, request, options, logger });
+
+    if (!responsiveCoaHosts.has(host)) {
+      return { ok: false, acknowledged: false, error: 'timeout' };
+    }
+
+    return { ok: true, acknowledged: true };
+  },
+  radiusDisconnect: async (
+    host: string,
+    request: RadiusDisconnectRequest,
+    options: RadiusProtocolOptions,
+    logger?: unknown
+  ): Promise<RadiusDisconnectResult> => {
+    disconnectCalls.push({ host, request, options, logger });
+
+    if (!responsiveDisconnectHosts.has(host)) {
+      return { ok: false, acknowledged: false, error: 'timeout' };
+    }
+
+    return { ok: true, acknowledged: true };
   }
 }));
 
@@ -83,7 +133,11 @@ describe('RadiusClient Failover', () => {
   beforeEach(() => {
     responsiveHosts = new Set(['10.0.0.1']);
     rejectingHosts = new Set();
+    responsiveCoaHosts = new Set(['10.0.0.1']);
+    responsiveDisconnectHosts = new Set(['10.0.0.1']);
     authCalls = [];
+    coaCalls = [];
+    disconnectCalls = [];
     client = new RadiusClient(config);
   });
 
@@ -204,5 +258,80 @@ describe('RadiusClient Failover', () => {
     );
 
     expect(client.getActiveHost()).toBe('10.0.0.1');
+  });
+
+  test('sendCoa forwards request and expected protocol options', async () => {
+    const result = await client.sendCoa({
+      username: 'alice',
+      sessionId: 'session-77',
+      attributes: [{ type: 11, value: 'filter-prod' }]
+    });
+
+    expect(result.ok).toBe(true);
+
+    const call = coaCalls[0];
+    if (!call) {
+      throw new Error('Expected a CoA protocol call');
+    }
+
+    expect(call.host).toBe('10.0.0.1');
+    expect(call.request).toEqual({
+      username: 'alice',
+      sessionId: 'session-77',
+      attributes: [{ type: 11, value: 'filter-prod' }]
+    });
+    expect(call.options).toMatchObject({
+      secret: 'secret',
+      port: 3799,
+      dynamicAuthorizationPort: 3799,
+      timeoutMs: 100
+    });
+    expect(call.logger).toBeDefined();
+  });
+
+  test('sendDisconnect forwards request and expected protocol options', async () => {
+    const result = await client.sendDisconnect({
+      username: 'alice',
+      sessionId: 'session-88'
+    });
+
+    expect(result.ok).toBe(true);
+
+    const call = disconnectCalls[0];
+    if (!call) {
+      throw new Error('Expected a Disconnect protocol call');
+    }
+
+    expect(call.host).toBe('10.0.0.1');
+    expect(call.request).toEqual({
+      username: 'alice',
+      sessionId: 'session-88'
+    });
+    expect(call.options).toMatchObject({
+      secret: 'secret',
+      port: 3799,
+      dynamicAuthorizationPort: 3799,
+      timeoutMs: 100
+    });
+    expect(call.logger).toBeDefined();
+  });
+
+  test('sendCoa timeout triggers failover probing', async () => {
+    responsiveCoaHosts = new Set(['10.0.0.2']);
+    responsiveHosts = new Set(['10.0.0.2']);
+
+    const result = await client.sendCoa({
+      username: 'alice',
+      sessionId: 'session-timeout'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+
+    await waitForCondition(
+      () => client.getActiveHost() === '10.0.0.2',
+      Math.max(healthTimeoutMs * 3, 250),
+      'Expected active host to fail over to 10.0.0.2 after CoA timeout'
+    );
   });
 });

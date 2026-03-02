@@ -1,10 +1,337 @@
 import dgram from "dgram";
 import crypto from "crypto";
-import type { Logger, RadiusResult, RadiusProtocolOptions, ParsedRadiusAttribute } from "./types";
+import type {
+  Logger,
+  ParsedRadiusAttribute,
+  RadiusCoaRequest,
+  RadiusCoaResult,
+  RadiusDisconnectRequest,
+  RadiusDisconnectResult,
+  RadiusDynamicAuthorizationAttribute,
+  RadiusDynamicAuthorizationRequestBase,
+  RadiusProtocolOptions,
+  RadiusResult
+} from "./types";
 import { decodeAttribute } from "./helpers";
 
 // Minimal RADIUS client using UDP for Access-Request/Accept exchange.
 // This is intentionally small and supports only PAP (User-Password) and Class attribute extraction.
+
+const DISCONNECT_REQUEST_CODE = 40;
+const DISCONNECT_ACK_CODE = 41;
+const DISCONNECT_NAK_CODE = 42;
+const COA_REQUEST_CODE = 43;
+const COA_ACK_CODE = 44;
+const COA_NAK_CODE = 45;
+
+function isUint32(value: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+
+function encodeRadiusAttribute(type: number, value: Buffer): Buffer {
+  if (!Number.isInteger(type) || type < 1 || type > 255) {
+    throw new Error(`[radius] Invalid attribute type: ${String(type)}`);
+  }
+
+  if (value.length > 253) {
+    throw new Error(`[radius] Attribute ${String(type)} value too large`);
+  }
+
+  return Buffer.concat([Buffer.from([type, value.length + 2]), value]);
+}
+
+function encodeStringAttribute(type: number, value: string): Buffer {
+  return encodeRadiusAttribute(type, Buffer.from(value, "utf8"));
+}
+
+function encodeIntegerAttribute(type: number, value: number): Buffer {
+  if (!isUint32(value)) {
+    throw new Error(`[radius] Attribute ${String(type)} must be uint32`);
+  }
+
+  const encoded = Buffer.alloc(4);
+  encoded.writeUInt32BE(value, 0);
+  return encodeRadiusAttribute(type, encoded);
+}
+
+function encodeDynamicAuthorizationAttribute(attribute: RadiusDynamicAuthorizationAttribute): Buffer {
+  if (typeof attribute.value === "string") {
+    return encodeStringAttribute(attribute.type, attribute.value);
+  }
+
+  if (typeof attribute.value === "number") {
+    return encodeIntegerAttribute(attribute.type, attribute.value);
+  }
+
+  return encodeRadiusAttribute(attribute.type, attribute.value);
+}
+
+function validateDynamicAuthorizationRequest(
+  request: RadiusDynamicAuthorizationRequestBase,
+  commandName: "coa" | "disconnect"
+): void {
+  const hasUsername = typeof request.username === "string" && request.username.trim().length > 0;
+  const hasSessionId = typeof request.sessionId === "string" && request.sessionId.trim().length > 0;
+  const hasAdditionalAttributes = (request.attributes?.length ?? 0) > 0;
+
+  if (request.username !== undefined && !hasUsername) {
+    throw new Error(`[radius] ${commandName} request.username must not be empty`);
+  }
+
+  if (request.sessionId !== undefined && !hasSessionId) {
+    throw new Error(`[radius] ${commandName} request.sessionId must not be empty`);
+  }
+
+  if (!hasUsername && !hasSessionId && !hasAdditionalAttributes) {
+    throw new Error(`[radius] ${commandName} request must include username, sessionId, or attributes`);
+  }
+
+  for (const attribute of request.attributes ?? []) {
+    if (typeof attribute.value === "number" && !isUint32(attribute.value)) {
+      throw new Error(`[radius] ${commandName} attribute ${String(attribute.type)} number values must be uint32`);
+    }
+  }
+}
+
+function buildDynamicAuthorizationAttributes(request: RadiusDynamicAuthorizationRequestBase): Buffer[] {
+  const attributes: Buffer[] = [];
+
+  if (request.username) {
+    attributes.push(encodeStringAttribute(1, request.username));
+  }
+
+  if (request.sessionId) {
+    attributes.push(encodeStringAttribute(44, request.sessionId));
+  }
+
+  for (const attribute of request.attributes ?? []) {
+    attributes.push(encodeDynamicAuthorizationAttribute(attribute));
+  }
+
+  return attributes;
+}
+
+function parseResponseAttributes(packet: Buffer, logger?: Logger): ParsedRadiusAttribute[] {
+  const attributes: ParsedRadiusAttribute[] = [];
+  let offset = 20;
+
+  while (offset + 2 <= packet.length) {
+    const t = packet.readUInt8(offset);
+    const l = packet.readUInt8(offset + 1);
+
+    if (l < 2) {
+      if (logger) logger.warn("[radius] invalid attribute length < 2; stopping parse");
+      break;
+    }
+
+    if (offset + l > packet.length) {
+      if (logger) logger.warn("[radius] attribute length runs past packet end; stopping parse");
+      break;
+    }
+
+    const value = packet.subarray(offset + 2, offset + l);
+
+    try {
+      attributes.push(decodeAttribute(t, value));
+    } catch (error: unknown) {
+      if (logger) logger.warn("[radius] error decoding attribute", { type: t, error });
+    }
+
+    offset += l;
+  }
+
+  return attributes;
+}
+
+function extractErrorCause(attributes: ParsedRadiusAttribute[]): number | undefined {
+  const attr = attributes.find((attribute) => attribute.id === 101);
+  if (!attr || typeof attr.value !== "number") {
+    return undefined;
+  }
+
+  return attr.value;
+}
+
+function hasValidResponseAuthenticator(response: Buffer, requestAuthenticator: Buffer, secret: string): boolean {
+  const expectedAuthenticator = crypto
+    .createHash("md5")
+    .update(
+      Buffer.concat([
+        Buffer.from([response.readUInt8(0)]),
+        Buffer.from([response.readUInt8(1)]),
+        response.subarray(2, 4),
+        requestAuthenticator,
+        response.subarray(20),
+        Buffer.from(secret, "utf8")
+      ])
+    )
+    .digest();
+
+  return expectedAuthenticator.equals(response.subarray(4, 20));
+}
+
+interface DynamicAuthorizationCodes {
+  requestCode: number;
+  ackCode: number;
+  nakCode: number;
+  nakError: "coa_nak" | "disconnect_nak";
+  commandName: "coa" | "disconnect";
+}
+
+async function sendDynamicAuthorization(
+  host: string,
+  request: RadiusDynamicAuthorizationRequestBase,
+  options: RadiusProtocolOptions,
+  codes: DynamicAuthorizationCodes,
+  logger?: Logger
+): Promise<RadiusCoaResult> {
+  const secret = options.secret;
+  if (!secret) {
+    throw new Error("RADIUS secret is required and cannot be empty");
+  }
+
+  validateDynamicAuthorizationRequest(request, codes.commandName);
+
+  const port = options.dynamicAuthorizationPort ?? options.port ?? 3799;
+  const timeoutMs = options.timeoutMs ?? 5000;
+
+  if (logger) {
+    logger.debug(`[radius] ${codes.commandName} start`, {
+      host,
+      user: request.username,
+      sessionId: request.sessionId,
+      port
+    });
+  }
+
+  return await new Promise((resolve, reject) => {
+    const client = dgram.createSocket("udp4");
+    const id = crypto.randomBytes(1).readUInt8(0);
+
+    const attributes = buildDynamicAuthorizationAttributes(request);
+    const attrBuf = Buffer.concat(attributes);
+    const len = 20 + attrBuf.length;
+    if (len > 0xffff) {
+      throw new Error(`[radius] ${codes.commandName} packet exceeds maximum RADIUS length`);
+    }
+
+    const header = Buffer.alloc(20);
+    header.writeUInt8(codes.requestCode, 0);
+    header.writeUInt8(id, 1);
+    header.writeUInt16BE(len, 2);
+
+    const packet = Buffer.concat([header, attrBuf]);
+    const requestAuthenticator = crypto
+      .createHash("md5")
+      .update(Buffer.concat([packet, Buffer.from(secret, "utf8")]))
+      .digest();
+    requestAuthenticator.copy(packet, 4);
+
+    const timer = setTimeout(() => {
+      client.close();
+      resolve({ ok: false, acknowledged: false, error: "timeout" });
+    }, timeoutMs);
+
+    client.on("message", (msg) => {
+      clearTimeout(timer);
+      client.close();
+
+      if (msg.length < 20) {
+        if (logger) logger.warn("[radius] received malformed response (too short)");
+        resolve({ ok: false, acknowledged: false, raw: msg.toString("hex"), error: "malformed_response" });
+        return;
+      }
+
+      const declaredLength = msg.readUInt16BE(2);
+      if (declaredLength < 20 || declaredLength > msg.length) {
+        if (logger) {
+          logger.warn("[radius] received malformed response (length mismatch)", {
+            declaredLength,
+            actualLength: msg.length
+          });
+        }
+        resolve({ ok: false, acknowledged: false, raw: msg.toString("hex"), error: "malformed_response" });
+        return;
+      }
+
+      const responsePacket = msg.subarray(0, declaredLength);
+
+      if (responsePacket.readUInt8(1) !== id) {
+        resolve({
+          ok: false,
+          acknowledged: false,
+          raw: responsePacket.toString("hex"),
+          error: "identifier_mismatch"
+        });
+        return;
+      }
+
+      if (!hasValidResponseAuthenticator(responsePacket, requestAuthenticator, secret)) {
+        if (logger) logger.warn(`[radius] ${codes.commandName} response authenticator mismatch; dropping response`);
+        resolve({
+          ok: false,
+          acknowledged: false,
+          raw: responsePacket.toString("hex"),
+          error: "authenticator_mismatch"
+        });
+        return;
+      }
+
+      const code = responsePacket.readUInt8(0);
+      const parsedAttributes = parseResponseAttributes(responsePacket, logger);
+      const errorCause = extractErrorCause(parsedAttributes);
+
+      if (code === codes.ackCode) {
+        resolve({
+          ok: true,
+          acknowledged: true,
+          attributes: parsedAttributes,
+          raw: responsePacket.toString("hex"),
+          errorCause
+        });
+        return;
+      }
+
+      if (code === codes.nakCode) {
+        resolve({
+          ok: false,
+          acknowledged: false,
+          attributes: parsedAttributes,
+          raw: responsePacket.toString("hex"),
+          error: codes.nakError,
+          errorCause
+        });
+        return;
+      }
+
+      resolve({
+        ok: false,
+        acknowledged: false,
+        attributes: parsedAttributes,
+        raw: responsePacket.toString("hex"),
+        error: "unknown_code"
+      });
+    });
+
+    client.on("error", (err) => {
+      clearTimeout(timer);
+      try {
+        client.close();
+      } catch (closeError: unknown) {
+        if (logger) logger.debug("[radius] socket close after error failed", closeError);
+      }
+      reject(err);
+    });
+
+    client.send(packet, port, host, (err) => {
+      if (err) {
+        clearTimeout(timer);
+        client.close();
+        reject(err);
+      }
+    });
+  });
+}
 
 export async function radiusAuthenticate(
   host: string,
@@ -264,4 +591,50 @@ export async function radiusAuthenticate(
       }
     });
   });
+}
+
+export async function radiusCoa(
+  host: string,
+  request: RadiusCoaRequest,
+  options: RadiusProtocolOptions,
+  logger?: Logger
+): Promise<RadiusCoaResult> {
+  const result = await sendDynamicAuthorization(
+    host,
+    request,
+    options,
+    {
+      requestCode: COA_REQUEST_CODE,
+      ackCode: COA_ACK_CODE,
+      nakCode: COA_NAK_CODE,
+      nakError: "coa_nak",
+      commandName: "coa"
+    },
+    logger
+  );
+
+  return result;
+}
+
+export async function radiusDisconnect(
+  host: string,
+  request: RadiusDisconnectRequest,
+  options: RadiusProtocolOptions,
+  logger?: Logger
+): Promise<RadiusDisconnectResult> {
+  const result = await sendDynamicAuthorization(
+    host,
+    request,
+    options,
+    {
+      requestCode: DISCONNECT_REQUEST_CODE,
+      ackCode: DISCONNECT_ACK_CODE,
+      nakCode: DISCONNECT_NAK_CODE,
+      nakError: "disconnect_nak",
+      commandName: "disconnect"
+    },
+    logger
+  );
+
+  return result;
 }

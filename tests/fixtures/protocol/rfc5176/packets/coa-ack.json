@@ -1,0 +1,20 @@
+{
+  "name": "coa-ack",
+  "rfc": "RFC5176",
+  "description": "CoA-ACK packet with a deterministic Reply-Message attribute.",
+  "packetHex": "2c 01 00 18 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 12 04 6f 6b",
+  "expected": {
+    "code": 44,
+    "identifier": 1,
+    "length": 24,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 18,
+        "name": "Reply-Message",
+        "rawHex": "6f6b",
+        "decodedValue": "ok"
+      }
+    ]
+  }
+}

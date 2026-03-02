@@ -1,5 +1,14 @@
-import { radiusAuthenticate } from "./protocol";
-import { type RadiusConfig, type RadiusResult, type Logger, ConsoleLogger } from "./types";
+import { radiusAuthenticate, radiusCoa, radiusDisconnect } from "./protocol";
+import {
+  type Logger,
+  type RadiusCoaRequest,
+  type RadiusCoaResult,
+  type RadiusConfig,
+  type RadiusDisconnectRequest,
+  type RadiusDisconnectResult,
+  type RadiusResult,
+  ConsoleLogger
+} from "./types";
 
 interface HostHealth {
   host: string;
@@ -68,6 +77,84 @@ export class RadiusClient {
       return result;
     } catch (e) {
       this.logger.error('[radius-client] authenticate exception', { error: e });
+      throw e;
+    }
+  }
+
+  public async sendCoa(request: RadiusCoaRequest): Promise<RadiusCoaResult> {
+    const host = this.getActiveHost();
+    const timeoutMs = this.config.timeoutMs || 5000;
+    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort || this.config.port || 3799;
+
+    this.logger.debug("[radius-client] coa start", {
+      host,
+      username: request.username,
+      sessionId: request.sessionId
+    });
+
+    try {
+      const protocolOptions = {
+        secret: this.config.secret,
+        port: dynamicAuthorizationPort,
+        dynamicAuthorizationPort,
+        timeoutMs
+      };
+
+      const result = await radiusCoa(host, request, protocolOptions, this.logger);
+
+      if (!result.ok && result.error === "timeout") {
+        this.logger.warn("[radius-client] coa timeout detected", {
+          host,
+          username: request.username,
+          sessionId: request.sessionId
+        });
+        this.onAuthTimeout().catch((error: unknown) => {
+          this.logger.warn("[radius-client] onAuthTimeout error", error);
+        });
+      }
+
+      return result;
+    } catch (e) {
+      this.logger.error("[radius-client] coa exception", { error: e });
+      throw e;
+    }
+  }
+
+  public async sendDisconnect(request: RadiusDisconnectRequest): Promise<RadiusDisconnectResult> {
+    const host = this.getActiveHost();
+    const timeoutMs = this.config.timeoutMs || 5000;
+    const dynamicAuthorizationPort = this.config.dynamicAuthorizationPort || this.config.port || 3799;
+
+    this.logger.debug("[radius-client] disconnect start", {
+      host,
+      username: request.username,
+      sessionId: request.sessionId
+    });
+
+    try {
+      const protocolOptions = {
+        secret: this.config.secret,
+        port: dynamicAuthorizationPort,
+        dynamicAuthorizationPort,
+        timeoutMs
+      };
+
+      const result = await radiusDisconnect(host, request, protocolOptions, this.logger);
+
+      if (!result.ok && result.error === "timeout") {
+        this.logger.warn("[radius-client] disconnect timeout detected", {
+          host,
+          username: request.username,
+          sessionId: request.sessionId
+        });
+        this.onAuthTimeout().catch((error: unknown) => {
+          this.logger.warn("[radius-client] onAuthTimeout error", error);
+        });
+      }
+
+      return result;
+    } catch (e) {
+      this.logger.error("[radius-client] disconnect exception", { error: e });
       throw e;
     }
   }

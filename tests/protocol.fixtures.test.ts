@@ -59,6 +59,46 @@ describe("Protocol fixture infrastructure", () => {
         );
     });
 
+    test("decodes RFC5176 CoA-ACK fixture deterministically", () => {
+        const fixture = loadRadiusPacketFixture("protocol/rfc5176/packets/coa-ack.json");
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(44);
+        expect(decodedPacket.attributes[0]?.name).toBe("Reply-Message");
+        expect(decodedPacket.attributes[0]?.value).toBe("ok");
+    });
+
+    test("decodes RFC5176 CoA-NAK fixture with Error-Cause", () => {
+        const fixture = loadRadiusPacketFixture("protocol/rfc5176/packets/coa-nak.error-cause.json");
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(45);
+        expect(decodedPacket.attributes[0]?.name).toBe("Error-Cause");
+        expect(decodedPacket.attributes[0]?.value).toBe(503);
+    });
+
+    test("decodes RFC5176 Disconnect-ACK fixture deterministically", () => {
+        const fixture = loadRadiusPacketFixture("protocol/rfc5176/packets/disconnect-ack.json");
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(41);
+        expect(decodedPacket.attributes[0]?.name).toBe("Acct-Terminate-Cause");
+        expect(decodedPacket.attributes[0]?.value).toBe(6);
+    });
+
+    test("decodes RFC5176 Disconnect-NAK fixture with Error-Cause", () => {
+        const fixture = loadRadiusPacketFixture("protocol/rfc5176/packets/disconnect-nak.error-cause.json");
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(42);
+        expect(decodedPacket.attributes[0]?.name).toBe("Error-Cause");
+        expect(decodedPacket.attributes[0]?.value).toBe(504);
+    });
+
     test("rejects fixture paths outside tests/fixtures", () => {
         expect(() => loadRadiusPacketFixture("../protocol.fixtures.test.ts")).toThrow(
             "Fixture path escapes tests/fixtures",
