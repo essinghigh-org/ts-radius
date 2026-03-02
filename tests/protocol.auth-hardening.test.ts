@@ -23,6 +23,12 @@ function createMessageAuthenticatorAttributeWithLength(length: number, fillByte:
   return Buffer.concat([Buffer.from([80, length]), Buffer.alloc(valueLength, fillByte)]);
 }
 
+function buildOversizedResponseAttributes(): Buffer[] {
+  return Array.from({ length: 16 }, () =>
+    Buffer.concat([Buffer.from([18, 255]), Buffer.alloc(253, 0x61)])
+  );
+}
+
 function buildAccessAcceptResponse(options: {
   request: Buffer;
   responseIdentifier?: number;
@@ -223,6 +229,19 @@ describe("radiusAuthenticate response hardening", () => {
         response.writeUInt16BE(response.length - 1, 2);
         return response;
       },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("malformed_response");
+  });
+
+  test("rejects inbound Access-Accept responses above RFC maximum length of 4096 bytes", async () => {
+    const result = await runAuthScenario({
+      responseBuilder: (request) =>
+        buildAccessAcceptResponse({
+          request,
+          attributes: buildOversizedResponseAttributes(),
+        }),
     });
 
     expect(result.ok).toBe(false);
