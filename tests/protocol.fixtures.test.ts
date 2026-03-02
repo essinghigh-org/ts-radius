@@ -90,4 +90,72 @@ describe("Protocol fixture infrastructure", () => {
 
         expect(() => assertPacketMatchesFixture(packet, fixture)).toThrow("Attribute value mismatch");
     });
+
+    test("decodes RFC6929 extended attributes and preserves raw payload bytes", () => {
+        const fixture: RadiusPacketFixture = {
+            name: "rfc6929-extended-attribute",
+            rfc: "RFC6929",
+            description: "Access-Accept packet with one extended attribute (Type 241).",
+            packetHex: "02 01 00 1b 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f1 07 01 de ad be ef",
+            expected: {
+                code: 2,
+                identifier: 1,
+                length: 27,
+                authenticatorHexPattern: "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+                attributes: [
+                    {
+                        id: 241,
+                        name: "Extended-Attribute-241",
+                        rawHex: "01deadbeef",
+                        decodedValue: {
+                            format: "extended",
+                            extendedType: 1,
+                            data: "deadbeef",
+                        },
+                    },
+                ],
+            },
+        };
+
+        const packet = hexToBuffer(fixture.packetHex);
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+
+        expect(decodedPacket.attributes).toHaveLength(1);
+        expect(decodedPacket.attributes[0]?.raw).toBe("01deadbeef");
+    });
+
+    test("decodes RFC6929 long-extended attributes and exposes continuation metadata", () => {
+        const fixture: RadiusPacketFixture = {
+            name: "rfc6929-long-extended-attribute",
+            rfc: "RFC6929",
+            description: "Access-Accept packet with one long-extended attribute (Type 245).",
+            packetHex: "02 01 00 1c 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f5 08 05 80 ca fe ba be",
+            expected: {
+                code: 2,
+                identifier: 1,
+                length: 28,
+                authenticatorHexPattern: "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+                attributes: [
+                    {
+                        id: 245,
+                        name: "Long-Extended-Attribute-245",
+                        rawHex: "0580cafebabe",
+                        decodedValue: {
+                            format: "long-extended",
+                            extendedType: 5,
+                            flags: 128,
+                            hasMore: true,
+                            data: "cafebabe",
+                        },
+                    },
+                ],
+            },
+        };
+
+        const packet = hexToBuffer(fixture.packetHex);
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+
+        expect(decodedPacket.attributes).toHaveLength(1);
+        expect(decodedPacket.attributes[0]?.id).toBe(245);
+    });
 });

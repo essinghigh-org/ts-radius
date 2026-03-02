@@ -1,7 +1,109 @@
 import { RADIUS_ATTRIBUTES } from "./dictionary";
-import type { ParsedRadiusAttribute, VendorSpecificAttribute } from "./types";
+import type { ExtendedRadiusAttribute, ParsedRadiusAttribute, VendorSpecificAttribute } from "./types";
 
 type DecodedAttributeValue = string | number | bigint | Date;
+const EXTENDED_ATTRIBUTE_IDS = [241, 242, 243, 244] as const;
+const LONG_EXTENDED_ATTRIBUTE_IDS = [245, 246] as const;
+
+type ExtendedAttributeId = (typeof EXTENDED_ATTRIBUTE_IDS)[number];
+type LongExtendedAttributeId = (typeof LONG_EXTENDED_ATTRIBUTE_IDS)[number];
+
+function isExtendedAttributeId(id: number): id is ExtendedAttributeId {
+  return EXTENDED_ATTRIBUTE_IDS.some((candidateId) => candidateId === id);
+}
+
+function isLongExtendedAttributeId(id: number): id is LongExtendedAttributeId {
+  return LONG_EXTENDED_ATTRIBUTE_IDS.some((candidateId) => candidateId === id);
+}
+
+function decodeExtendedAttribute(id: ExtendedAttributeId, value: Buffer): ExtendedRadiusAttribute {
+  const raw = value.toString("hex");
+
+  if (value.length < 1) {
+    return {
+      id,
+      name: `Extended-Attribute-${String(id)}`,
+      value: {
+        format: "extended",
+        extendedType: 0,
+        data: "",
+        malformed: true,
+        reason: "missing_extended_type"
+      },
+      raw
+    };
+  }
+
+  const extendedType = value.readUInt8(0);
+  const data = value.subarray(1).toString("hex");
+
+  return {
+    id,
+    name: `Extended-Attribute-${String(id)}`,
+    value: {
+      format: "extended",
+      extendedType,
+      data
+    },
+    raw
+  };
+}
+
+function decodeLongExtendedAttribute(id: LongExtendedAttributeId, value: Buffer): ExtendedRadiusAttribute {
+  const raw = value.toString("hex");
+
+  if (value.length < 1) {
+    return {
+      id,
+      name: `Long-Extended-Attribute-${String(id)}`,
+      value: {
+        format: "long-extended",
+        extendedType: 0,
+        flags: 0,
+        hasMore: false,
+        data: "",
+        malformed: true,
+        reason: "missing_long_extended_type"
+      },
+      raw
+    };
+  }
+
+  const extendedType = value.readUInt8(0);
+
+  if (value.length < 2) {
+    return {
+      id,
+      name: `Long-Extended-Attribute-${String(id)}`,
+      value: {
+        format: "long-extended",
+        extendedType,
+        flags: 0,
+        hasMore: false,
+        data: "",
+        malformed: true,
+        reason: "missing_long_extended_flags"
+      },
+      raw
+    };
+  }
+
+  const flags = value.readUInt8(1);
+  const data = value.subarray(2).toString("hex");
+
+  return {
+    id,
+    name: `Long-Extended-Attribute-${String(id)}`,
+    value: {
+      format: "long-extended",
+      extendedType,
+      flags,
+      hasMore: (flags & 0x80) !== 0,
+      data
+    },
+    raw
+  };
+}
 
 export function decodeString(buffer: Buffer): string {
   return buffer.toString("utf8");
@@ -121,6 +223,14 @@ export function decodeVendorSpecific(value: Buffer): VendorSpecificAttribute {
 export function decodeAttribute(id: number, value: Buffer): ParsedRadiusAttribute {
   if (id === 26) {
     return decodeVendorSpecific(value);
+  }
+
+  if (isExtendedAttributeId(id)) {
+    return decodeExtendedAttribute(id, value);
+  }
+
+  if (isLongExtendedAttributeId(id)) {
+    return decodeLongExtendedAttribute(id, value);
   }
 
   const def = RADIUS_ATTRIBUTES[id];
