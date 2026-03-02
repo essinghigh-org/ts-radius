@@ -1,0 +1,26 @@
+{
+  "name": "rfc6929-long-extended-attribute",
+  "rfc": "RFC6929",
+  "description": "Access-Accept packet with one long-extended attribute (Type 245).",
+  "packetHex": "02 01 00 1c 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f5 08 05 80 ca fe ba be",
+  "expected": {
+    "code": 2,
+    "identifier": 1,
+    "length": 28,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 245,
+        "name": "Long-Extended-Attribute-245",
+        "rawHex": "0580cafebabe",
+        "decodedValue": {
+          "format": "long-extended",
+          "extendedType": 5,
+          "flags": 128,
+          "hasMore": true,
+          "data": "cafebabe"
+        }
+      }
+    ]
+  }
+}
