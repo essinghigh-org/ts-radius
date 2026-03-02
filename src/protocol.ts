@@ -62,7 +62,11 @@ function isResponseSourceValid(remoteInfo: RemoteInfo, expectedHosts: Set<string
   return expectedHosts.has(normalizeHostValue(remoteInfo.address));
 }
 
-function validateResponseMessageAuthenticator(msg: Buffer, secret: string): MessageAuthenticatorValidationResult {
+function validateResponseMessageAuthenticator(
+  msg: Buffer,
+  secret: string,
+  requestAuthenticator: Buffer
+): MessageAuthenticatorValidationResult {
   let offset = 20;
   let messageAuthenticatorOffset: number | null = null;
 
@@ -111,6 +115,10 @@ function validateResponseMessageAuthenticator(msg: Buffer, secret: string): Mess
     messageAuthenticatorOffset + 2,
     messageAuthenticatorOffset + MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH,
   );
+
+  // For Access response packets, RFC behavior requires HMAC verification to use
+  // the original Access-Request Authenticator in the packet header field.
+  requestAuthenticator.copy(verificationPacket, 4, 0, 16);
 
   const expected = crypto
     .createHmac("md5", Buffer.from(secret, "utf8"))
@@ -262,7 +270,7 @@ export async function radiusAuthenticate(
         return;
       }
 
-      const messageAuthenticatorValidation = validateResponseMessageAuthenticator(msg, secret);
+      const messageAuthenticatorValidation = validateResponseMessageAuthenticator(msg, secret, authenticator);
       if (messageAuthenticatorValidation.present && !messageAuthenticatorValidation.valid) {
         if (responseMessageAuthenticatorPolicy === "strict") {
           if (logger) {

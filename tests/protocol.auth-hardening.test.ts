@@ -57,6 +57,86 @@ function buildAccessAcceptResponse(options: {
   return packet;
 }
 
+function writeResponseAuthenticator(packet: Buffer, requestAuthenticator: Buffer): void {
+  const responseIdentifier = packet.readUInt8(1);
+  const length = packet.readUInt16BE(2);
+  const attributes = packet.subarray(20, length);
+
+  const lengthBuffer = Buffer.alloc(2);
+  lengthBuffer.writeUInt16BE(length, 0);
+
+  const responseAuthenticator = crypto
+    .createHash("md5")
+    .update(
+      Buffer.concat([
+        Buffer.from([2, responseIdentifier]),
+        lengthBuffer,
+        requestAuthenticator,
+        attributes,
+        Buffer.from(TEST_SECRET, "utf8"),
+      ]),
+    )
+    .digest();
+
+  responseAuthenticator.copy(packet, 4);
+}
+
+function writeResponseMessageAuthenticator(packet: Buffer, requestAuthenticator: Buffer): void {
+  let messageAuthenticatorOffset: number | null = null;
+  let offset = 20;
+
+  while (offset + 2 <= packet.length) {
+    const type = packet.readUInt8(offset);
+    const length = packet.readUInt8(offset + 1);
+
+    if (length < 2 || offset + length > packet.length) {
+      throw new Error("Invalid response attribute layout in test packet");
+    }
+
+    if (type === 80 && length === 18) {
+      messageAuthenticatorOffset = offset;
+      break;
+    }
+
+    offset += length;
+  }
+
+  if (messageAuthenticatorOffset === null) {
+    throw new Error("Message-Authenticator attribute missing in test packet");
+  }
+
+  const verificationPacket = Buffer.from(packet);
+  verificationPacket.fill(0, messageAuthenticatorOffset + 2, messageAuthenticatorOffset + 18);
+  requestAuthenticator.copy(verificationPacket, 4, 0, 16);
+
+  const messageAuthenticator = crypto
+    .createHmac("md5", Buffer.from(TEST_SECRET, "utf8"))
+    .update(verificationPacket)
+    .digest();
+
+  messageAuthenticator.copy(packet, messageAuthenticatorOffset + 2);
+}
+
+function buildAccessAcceptResponseWithValidMessageAuthenticator(options: {
+  request: Buffer;
+  responseIdentifier?: number;
+}): Buffer {
+  const request = options.request;
+  const responseIdentifier = options.responseIdentifier ?? request.readUInt8(1);
+  const requestAuthenticator = request.subarray(4, 20);
+
+  const packet = buildAccessAcceptResponse({
+    request,
+    responseIdentifier,
+    attributes: [createClassAttribute("engineering"), createMessageAuthenticatorAttribute(0x00)],
+  });
+
+  writeResponseMessageAuthenticator(packet, requestAuthenticator);
+  writeResponseAuthenticator(packet, requestAuthenticator);
+
+  return packet;
+}
+
 async function bindSocket(socket: Socket): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     const onError = (error: Error) => {
@@ -189,6 +269,19 @@ describe("radiusAuthenticate response hardening", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toBe("malformed_response");
+  });
+
+  test("accepts a valid response Message-Authenticator in strict policy", async () => {
+    const result = await runAuthScenario({
+      protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
+      responseBuilder: (request) =>
+        buildAccessAcceptResponseWithValidMessageAuthenticator({
+          request,
+        }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.class).toBe("engineering");
   });
 
   test("keeps compatibility mode for invalid Message-Authenticator when present", async () => {
