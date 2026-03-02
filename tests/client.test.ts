@@ -1468,6 +1468,18 @@ describe('RadiusClient Failover', () => {
       }
     }, undefined, { protocol: protocolMock });
 
+    const retryClientInternals = retryClient as unknown as {
+      createDynamicAuthorizationRequestIdentifier: () => number;
+    };
+    const deterministicIdentifiers = [0x21, 0x42];
+    retryClientInternals.createDynamicAuthorizationRequestIdentifier = (): number => {
+      const nextIdentifier = deterministicIdentifiers.shift();
+      if (nextIdentifier === undefined) {
+        throw new Error('Expected deterministic CoA identifier sequence to contain two values');
+      }
+      return nextIdentifier;
+    };
+
     responsiveCoaHosts = new Set(['10.0.0.2']);
     coaCalls = [];
     coaResponseBySessionId = new Map([
@@ -1497,11 +1509,9 @@ describe('RadiusClient Failover', () => {
       throw new Error('Expected CoA retry identities to be defined for both hosts');
     }
 
-    const identityIsReusedAcrossFailover =
-      secondIdentity.identifier === firstIdentity.identifier
-      && secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator);
-
-    expect(identityIsReusedAcrossFailover).toBe(false);
+    expect(firstIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.identifier).not.toBe(firstIdentity.identifier);
 
     retryClient.shutdown();
   });
@@ -1520,6 +1530,15 @@ describe('RadiusClient Failover', () => {
         jitterRatio: 0
       }
     }, undefined, { protocol: protocolMock });
+
+    const retryClientInternals = retryClient as unknown as {
+      createDynamicAuthorizationRequestIdentifier: () => number;
+    };
+    let identifierFactoryCalls = 0;
+    retryClientInternals.createDynamicAuthorizationRequestIdentifier = (): number => {
+      identifierFactoryCalls += 1;
+      return 0x33;
+    };
 
     responsiveCoaHosts = new Set(['10.0.0.1']);
     coaCalls = [];
@@ -1550,8 +1569,10 @@ describe('RadiusClient Failover', () => {
       throw new Error('Expected CoA retry identities to be defined for same-host retries');
     }
 
+    expect(identifierFactoryCalls).toBe(1);
     expect(secondIdentity.identifier).toBe(firstIdentity.identifier);
-    expect(secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
+    expect(firstIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.requestAuthenticator).toBeUndefined();
 
     retryClient.shutdown();
   });
@@ -1660,6 +1681,18 @@ describe('RadiusClient Failover', () => {
       }
     }, undefined, { protocol: protocolMock });
 
+    const retryClientInternals = retryClient as unknown as {
+      createDynamicAuthorizationRequestIdentifier: () => number;
+    };
+    const deterministicIdentifiers = [0x51, 0x72];
+    retryClientInternals.createDynamicAuthorizationRequestIdentifier = (): number => {
+      const nextIdentifier = deterministicIdentifiers.shift();
+      if (nextIdentifier === undefined) {
+        throw new Error('Expected deterministic Disconnect identifier sequence to contain two values');
+      }
+      return nextIdentifier;
+    };
+
     responsiveDisconnectHosts = new Set(['10.0.0.2']);
     disconnectCalls = [];
     disconnectResponseBySessionId = new Map([
@@ -1689,11 +1722,9 @@ describe('RadiusClient Failover', () => {
       throw new Error('Expected Disconnect retry identities to be defined for both hosts');
     }
 
-    const identityIsReusedAcrossFailover =
-      secondIdentity.identifier === firstIdentity.identifier
-      && secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator);
-
-    expect(identityIsReusedAcrossFailover).toBe(false);
+    expect(firstIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.identifier).not.toBe(firstIdentity.identifier);
 
     retryClient.shutdown();
   });
@@ -1712,6 +1743,15 @@ describe('RadiusClient Failover', () => {
         jitterRatio: 0
       }
     }, undefined, { protocol: protocolMock });
+
+    const retryClientInternals = retryClient as unknown as {
+      createDynamicAuthorizationRequestIdentifier: () => number;
+    };
+    let identifierFactoryCalls = 0;
+    retryClientInternals.createDynamicAuthorizationRequestIdentifier = (): number => {
+      identifierFactoryCalls += 1;
+      return 0x61;
+    };
 
     responsiveDisconnectHosts = new Set(['10.0.0.1']);
     disconnectCalls = [];
@@ -1742,8 +1782,10 @@ describe('RadiusClient Failover', () => {
       throw new Error('Expected Disconnect retry identities to be defined for same-host retries');
     }
 
+    expect(identifierFactoryCalls).toBe(1);
     expect(secondIdentity.identifier).toBe(firstIdentity.identifier);
-    expect(secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
+    expect(firstIdentity.requestAuthenticator).toBeUndefined();
+    expect(secondIdentity.requestAuthenticator).toBeUndefined();
 
     retryClient.shutdown();
   });

@@ -617,6 +617,12 @@ function resolveDynamicAuthorizationRequestIdentity(
     );
   }
 
+  if (requestAuthenticator === undefined) {
+    return {
+      identifier,
+    };
+  }
+
   if (!Buffer.isBuffer(requestAuthenticator) || requestAuthenticator.length !== 16) {
     throw new Error(
       "[radius] dynamic authorization request identity.requestAuthenticator must be a 16-byte Buffer"
