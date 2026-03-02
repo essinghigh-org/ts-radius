@@ -682,7 +682,11 @@ export class RadiusClient {
     this.inProgress = false;
     const waiters = this.inProgressWaiters.splice(0);
     for (const waiter of waiters) {
-      waiter();
+      try {
+        waiter();
+      } catch (error: unknown) {
+        this.logger.warn('[radius-client] health operation waiter threw', { error });
+      }
     }
   }
 

@@ -309,6 +309,86 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
+  test("ignores CoA responses from unexpected source port by default", async () => {
+    const server = await bindServer();
+    const alternate = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44);
+      alternate.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-source-mismatch"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 200
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("timeout");
+    } finally {
+      await closeSocket(server);
+      await closeSocket(alternate);
+    }
+  });
+
+  test("validates oversized dynamic authorization packet before socket allocation", async () => {
+    const originalCreateSocket = dgram.createSocket;
+    let createSocketCalls = 0;
+
+    const createSocketSpy = ((...args: Parameters<typeof dgram.createSocket>) => {
+      createSocketCalls += 1;
+      return originalCreateSocket(...args);
+    }) as typeof dgram.createSocket;
+
+    (dgram as unknown as { createSocket: typeof dgram.createSocket }).createSocket = createSocketSpy;
+
+    const oversizedAttributes = Array.from({ length: 260 }, (_, index) => ({
+      type: (index % 255) + 1,
+      value: "x".repeat(253)
+    }));
+
+    try {
+      const oversizedRequest = radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          attributes: oversizedAttributes
+        },
+        {
+          secret: sharedSecret,
+          port: 3799,
+          timeoutMs: 200
+        }
+      );
+
+      let capturedError: unknown;
+      try {
+        await oversizedRequest;
+      } catch (error: unknown) {
+        capturedError = error;
+      }
+
+      expect(capturedError).toBeInstanceOf(Error);
+      expect((capturedError as Error).message).toBe(
+        "[radius] dynamic authorization packet exceeds maximum RADIUS length"
+      );
+
+      expect(createSocketCalls).toBe(0);
+    } finally {
+      (dgram as unknown as { createSocket: typeof dgram.createSocket }).createSocket = originalCreateSocket;
+    }
+  });
+
   test("rejects Disconnect responses with authenticator mismatch", async () => {
     const server = await bindServer();
 
