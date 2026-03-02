@@ -40,10 +40,10 @@ export class RadiusClient {
 
   constructor(config: RadiusConfig, logger?: Logger) {
     this.config = config;
-    if (!this.config.secret) {
+    if (!this.isNonEmptyText(this.config.secret)) {
       throw new Error('[radius-client] config.secret is required');
     }
-    if (!this.config.healthCheckUser || !this.config.healthCheckPassword) {
+    if (!this.isNonEmptyText(this.config.healthCheckUser) || !this.isNonEmptyText(this.config.healthCheckPassword)) {
       throw new Error('[radius-client] health check credentials (healthCheckUser, healthCheckPassword) are required');
     }
     this.logger = logger || new ConsoleLogger();
@@ -173,6 +173,18 @@ export class RadiusClient {
     }
 
     return Math.min(retryPolicy.maxDelayMs, Math.max(0, Math.round(jitteredDelay)));
+  }
+
+  private isNonEmptyText(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  private normalizeHost(host: unknown): string | null {
+    if (!this.isNonEmptyText(host)) {
+      return null;
+    }
+
+    return host.trim();
   }
 
   private isRetryableAuthFailure(result: RadiusResult): boolean {
@@ -320,7 +332,14 @@ export class RadiusClient {
       ? this.config.hosts
       : [this.config.host];
 
-    this.hosts = list.filter(Boolean);
+    this.hosts = list
+      .map((host) => this.normalizeHost(host))
+      .filter((host): host is string => host !== null);
+
+    if (this.hosts.length === 0) {
+      throw new Error('[radius-client] at least one non-empty host is required');
+    }
+
     const newHosts = new Set(this.hosts);
 
     // Add new hosts
@@ -348,7 +367,7 @@ export class RadiusClient {
   public getActiveHost(): string {
     if (this.activeHost) return this.activeHost;
     // Fallback: first host while we have not yet validated any
-    const fallback = this.hosts[0] || this.config.host;
+    const fallback = this.hosts[0] || this.normalizeHost(this.config.host);
     if (!fallback) {
       throw new Error('[radius-client] No active or fallback host available');
     }
