@@ -179,6 +179,19 @@ describe("radiusStatusServerProbe hardening", () => {
     expect(result.error).toBe("authenticator_mismatch");
   });
 
+  test("returns identifier_mismatch when Status-Server response identifier differs from request", async () => {
+    const result = await runStatusProbeScenario({
+      responseBuilder: (requestPacket) =>
+        buildStatusServerResponsePacket({
+          requestPacket,
+          responseIdentifier: (requestPacket.readUInt8(1) + 1) & 0xff,
+        }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("identifier_mismatch");
+  });
+
   test("returns unknown_code for unexpected Status-Server response code", async () => {
     const result = await runStatusProbeScenario({
       responseBuilder: (requestPacket) =>

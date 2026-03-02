@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-confusing-void-expression */
+
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -7,93 +9,97 @@ import {
   radiusDisconnect
 } from "../src/protocol";
 
-async function expectRejectMessage(action: () => Promise<unknown>, expectedMessage: string): Promise<void> {
-  let caughtError: unknown;
-
-  try {
-    await action();
-  } catch (error: unknown) {
-    caughtError = error;
-  }
-
-  expect(caughtError).toBeDefined();
-  if (!(caughtError instanceof Error)) {
-    throw new Error("Expected an Error instance to be thrown");
-  }
-
-  expect(caughtError.message).toBe(expectedMessage);
-}
-
 describe("protocol request/options validation", () => {
   test("rejects invalid assignmentAttributeId bounds", async () => {
-    await expectRejectMessage(
-      () => radiusAuthenticate("127.0.0.1", "alice", "password", {
-        secret: "secret",
-        assignmentAttributeId: 0,
-        timeoutMs: 10
-      }),
-      "[radius] assignmentAttributeId must be an integer between 1 and 255"
-    );
+    const assignmentLowerBoundRejection = (
+      expect(
+        radiusAuthenticate("127.0.0.1", "alice", "password", {
+          secret: "secret",
+          assignmentAttributeId: 0,
+          timeoutMs: 10
+        })
+      ).rejects.toThrow("[radius] assignmentAttributeId must be an integer between 1 and 255")
+    ) as unknown as Promise<void>;
+    await assignmentLowerBoundRejection;
 
-    await expectRejectMessage(
-      () => radiusAuthenticate("127.0.0.1", "alice", "password", {
-        secret: "secret",
-        assignmentAttributeId: 256,
-        timeoutMs: 10
-      }),
-      "[radius] assignmentAttributeId must be an integer between 1 and 255"
-    );
+    const assignmentUpperBoundRejection = (
+      expect(
+        radiusAuthenticate("127.0.0.1", "alice", "password", {
+          secret: "secret",
+          assignmentAttributeId: 256,
+          timeoutMs: 10
+        })
+      ).rejects.toThrow("[radius] assignmentAttributeId must be an integer between 1 and 255")
+    ) as unknown as Promise<void>;
+    await assignmentUpperBoundRejection;
   });
 
   test("requires vendorId and vendorType together for Vendor-Specific assignment extraction", async () => {
-    await expectRejectMessage(
-      () => radiusAuthenticate("127.0.0.1", "alice", "password", {
-        secret: "secret",
-        assignmentAttributeId: 26,
-        vendorId: 9,
-        timeoutMs: 10
-      }),
-      "[radius] vendorId and vendorType are both required when assignmentAttributeId is 26"
-    );
+    const missingVendorTypeRejection = (
+      expect(
+        radiusAuthenticate("127.0.0.1", "alice", "password", {
+          secret: "secret",
+          assignmentAttributeId: 26,
+          vendorId: 9,
+          timeoutMs: 10
+        })
+      ).rejects.toThrow("[radius] vendorId and vendorType are both required when assignmentAttributeId is 26")
+    ) as unknown as Promise<void>;
+    await missingVendorTypeRejection;
 
-    await expectRejectMessage(
-      () => radiusAuthenticate("127.0.0.1", "alice", "password", {
-        secret: "secret",
-        assignmentAttributeId: 26,
-        vendorType: 1,
-        timeoutMs: 10
-      }),
-      "[radius] vendorId and vendorType are both required when assignmentAttributeId is 26"
-    );
+    const missingVendorIdRejection = (
+      expect(
+        radiusAuthenticate("127.0.0.1", "alice", "password", {
+          secret: "secret",
+          assignmentAttributeId: 26,
+          vendorType: 1,
+          timeoutMs: 10
+        })
+      ).rejects.toThrow("[radius] vendorId and vendorType are both required when assignmentAttributeId is 26")
+    ) as unknown as Promise<void>;
+    await missingVendorIdRejection;
   });
 
   test("rejects invalid vendorId/vendorType bounds", async () => {
-    await expectRejectMessage(
-      () => radiusAuthenticate("127.0.0.1", "alice", "password", {
+    const negativeVendorIdRejection = expect(
+      radiusAuthenticate("127.0.0.1", "alice", "password", {
         secret: "secret",
         assignmentAttributeId: 26,
         vendorId: -1,
         vendorType: 1,
         timeoutMs: 10
-      }),
-      "[radius] vendorId must be a uint32"
-    );
+      })
+    ).rejects.toThrow("[radius] vendorId must be a uint32") as unknown as Promise<void>;
+    await negativeVendorIdRejection;
 
-    await expectRejectMessage(
-      () => radiusAuthenticate("127.0.0.1", "alice", "password", {
+    const largeVendorIdRejection = expect(
+      radiusAuthenticate("127.0.0.1", "alice", "password", {
         secret: "secret",
         assignmentAttributeId: 26,
-        vendorId: 9,
-        vendorType: 256,
+        vendorId: 0x1_0000_0000,
+        vendorType: 1,
         timeoutMs: 10
-      }),
-      "[radius] vendorType must be an integer between 0 and 255"
-    );
+      })
+    ).rejects.toThrow("[radius] vendorId must be a uint32") as unknown as Promise<void>;
+    await largeVendorIdRejection;
+
+    const invalidVendorTypeRejection = (
+      expect(
+        radiusAuthenticate("127.0.0.1", "alice", "password", {
+          secret: "secret",
+          assignmentAttributeId: 26,
+          vendorId: 9,
+          vendorType: 256,
+          timeoutMs: 10
+        })
+      ).rejects.toThrow("[radius] vendorType must be an integer between 0 and 255")
+    ) as unknown as Promise<void>;
+    await invalidVendorTypeRejection;
   });
 
   test("rejects invalid accounting request fields and bounds", async () => {
-    await expectRejectMessage(
-      () => radiusAccounting(
+    const missingUsernameRejection = expect(
+      radiusAccounting(
         "127.0.0.1",
         {
           username: "",
@@ -104,12 +110,12 @@ describe("protocol request/options validation", () => {
           secret: "secret",
           timeoutMs: 10
         }
-      ),
-      "[radius] accounting request.username is required"
-    );
+      )
+    ).rejects.toThrow("[radius] accounting request.username is required") as unknown as Promise<void>;
+    await missingUsernameRejection;
 
-    await expectRejectMessage(
-      () => radiusAccounting(
+    const invalidSessionTimeRejection = expect(
+      radiusAccounting(
         "127.0.0.1",
         {
           username: "alice",
@@ -121,14 +127,14 @@ describe("protocol request/options validation", () => {
           secret: "secret",
           timeoutMs: 10
         }
-      ),
-      "[radius] accounting request.sessionTime must be uint32"
-    );
+      )
+    ).rejects.toThrow("[radius] accounting request.sessionTime must be uint32") as unknown as Promise<void>;
+    await invalidSessionTimeRejection;
   });
 
   test("rejects invalid dynamic authorization request fields and bounds", async () => {
-    await expectRejectMessage(
-      () => radiusCoa(
+    const emptyUsernameRejection = expect(
+      radiusCoa(
         "127.0.0.1",
         {
           username: ""
@@ -137,35 +143,39 @@ describe("protocol request/options validation", () => {
           secret: "secret",
           timeoutMs: 10
         }
-      ),
-      "[radius] dynamic authorization request.username cannot be empty"
-    );
+      )
+    ).rejects.toThrow("[radius] dynamic authorization request.username cannot be empty") as unknown as Promise<void>;
+    await emptyUsernameRejection;
 
-    await expectRejectMessage(
-      () => radiusDisconnect(
-        "127.0.0.1",
-        {
-          username: "alice",
-          attributes: [{ type: 26, value: 0x1_0000_0000 }]
-        },
-        {
-          secret: "secret",
-          timeoutMs: 10
-        }
-      ),
-      "[radius] dynamic authorization attribute 26 number values must be uint32"
-    );
+    const invalidDynamicAttributeRejection = (
+      expect(
+        radiusDisconnect(
+          "127.0.0.1",
+          {
+            username: "alice",
+            attributes: [{ type: 26, value: 0x1_0000_0000 }]
+          },
+          {
+            secret: "secret",
+            timeoutMs: 10
+          }
+        )
+      ).rejects.toThrow("[radius] dynamic authorization attribute 26 number values must be uint32")
+    ) as unknown as Promise<void>;
+    await invalidDynamicAttributeRejection;
 
-    await expectRejectMessage(
-      () => radiusCoa(
-        "127.0.0.1",
-        {},
-        {
-          secret: "secret",
-          timeoutMs: 10
-        }
-      ),
-      "[radius] dynamic authorization request must include username, sessionId, or at least one attribute"
-    );
+    const missingDynamicIdentifiersRejection = (
+      expect(
+        radiusCoa(
+          "127.0.0.1",
+          {},
+          {
+            secret: "secret",
+            timeoutMs: 10
+          }
+        )
+      ).rejects.toThrow("[radius] dynamic authorization request must include username, sessionId, or at least one attribute")
+    ) as unknown as Promise<void>;
+    await missingDynamicIdentifiersRejection;
   });
 });
