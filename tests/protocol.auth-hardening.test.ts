@@ -271,6 +271,16 @@ describe("radiusAuthenticate response hardening", () => {
     expect(result.error).toBe("malformed_response");
   });
 
+  test("rejects missing Message-Authenticator in strict policy", async () => {
+    const result = await runAuthScenario({
+      protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },
+      responseBuilder: (request) => buildAccessAcceptResponse({ request }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("malformed_response");
+  });
+
   test("accepts a valid response Message-Authenticator in strict policy", async () => {
     const result = await runAuthScenario({
       protocolOptions: { responseMessageAuthenticatorPolicy: "strict" },

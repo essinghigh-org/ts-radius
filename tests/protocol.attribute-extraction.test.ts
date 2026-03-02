@@ -39,9 +39,7 @@ function buildAccessAcceptResponse(request: Buffer, attributes: Buffer[]): Buffe
   attributeBuffer.copy(response, 20);
 
   const hashInput = Buffer.concat([
-    Buffer.from([response.readUInt8(0)]),
-    Buffer.from([response.readUInt8(1)]),
-    response.subarray(2, 4),
+    response.subarray(0, 4),
     requestAuthenticator,
     attributeBuffer,
     Buffer.from(TEST_SECRET, "utf8")
@@ -154,6 +152,28 @@ describe("radiusAuthenticate attribute extraction", () => {
 
     expect(result.ok).toBe(true);
     expect(result.class).toBe("ops");
+  });
+
+  test("falls back to full regex match when valuePattern has no capture group", async () => {
+    const result = await runAuthScenario([
+      encodeStringAttribute(25, "group=ops;region=eu")
+    ], {
+      valuePattern: "group=[^;]+"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.class).toBe("group=ops");
+  });
+
+  test("does not extract value when valuePattern does not match", async () => {
+    const result = await runAuthScenario([
+      encodeStringAttribute(25, "group=ops;region=eu")
+    ], {
+      valuePattern: "tier=([^;]+)"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.class).toBeUndefined();
   });
 
   test("extracts capture group from valuePattern on vendor-specific attributes", async () => {

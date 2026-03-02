@@ -72,9 +72,7 @@ function buildAccountingResponsePacket(
   attributes.copy(response, 20);
 
   const hashInput = Buffer.concat([
-    Buffer.from([response.readUInt8(0)]),
-    Buffer.from([response.readUInt8(1)]),
-    response.subarray(2, 4),
+    response.subarray(0, 4),
     requestPacket.subarray(4, 20),
     attributes,
     Buffer.from(secret, "utf8")
@@ -268,6 +266,71 @@ describe("Accounting protocol", () => {
       expect(result.error).toBe("identifier_mismatch");
     } finally {
       await closeSocket(server);
+    }
+  });
+
+  test("rejects responses from unexpected source port by default", async () => {
+    const server = await bindServer();
+    const alternate = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 5);
+      alternate.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-source-validation",
+          statusType: "Interim-Update"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+      await closeSocket(alternate);
+    }
+  });
+
+  test("allows source mismatch when response source validation is disabled", async () => {
+    const server = await bindServer();
+    const alternate = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 5);
+      alternate.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-source-validation-disabled",
+          statusType: "Interim-Update"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          validateResponseSource: false
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.error).toBeUndefined();
+    } finally {
+      await closeSocket(server);
+      await closeSocket(alternate);
     }
   });
 

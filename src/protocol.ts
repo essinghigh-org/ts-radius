@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import dgram, { type RemoteInfo } from "node:dgram";
 import crypto from "node:crypto";
-import { isIP } from "node:net";
+import { isIP, SocketAddress } from "node:net";
 
 import type {
   Logger,
@@ -88,7 +88,11 @@ function extractAssignmentValue(rawValue: string, valuePattern: string | undefin
   try {
     const regex = new RegExp(valuePattern);
     const match = rawValue.match(regex);
-    return match?.[1];
+    if (!match) {
+      return undefined;
+    }
+
+    return match[1] ?? match[0];
   } catch (error: unknown) {
     if (logger) {
       logger.warn("[radius] invalid valuePattern; falling back to full attribute value", {
@@ -126,19 +130,9 @@ function encodeIntegerAttribute(type: number, value: number): Buffer {
   return encodeRadiusAttribute(type, buffer);
 }
 
-function encodeAccountingCustomAttribute(attribute: RadiusAccountingAttribute): Buffer {
-  if (typeof attribute.value === "string") {
-    return encodeStringAttribute(attribute.type, attribute.value);
-  }
-
-  if (typeof attribute.value === "number") {
-    return encodeIntegerAttribute(attribute.type, attribute.value);
-  }
-
-  return encodeRadiusAttribute(attribute.type, attribute.value);
-}
-
-function encodeDynamicAuthorizationAttribute(attribute: RadiusDynamicAuthorizationAttribute): Buffer {
+function encodeCustomAttributeValue(
+  attribute: RadiusAccountingAttribute | RadiusDynamicAuthorizationAttribute
+): Buffer {
   if (typeof attribute.value === "string") {
     return encodeStringAttribute(attribute.type, attribute.value);
   }
@@ -324,7 +318,7 @@ function buildAccountingAttributes(request: RadiusAccountingRequest): Buffer[] {
   }
 
   for (const attribute of request.attributes ?? []) {
-    attrs.push(encodeAccountingCustomAttribute(attribute));
+    attrs.push(encodeCustomAttributeValue(attribute));
   }
 
   return attrs;
@@ -372,7 +366,7 @@ function buildDynamicAuthorizationAttributes(request: RadiusDynamicAuthorization
   }
 
   for (const attribute of request.attributes ?? []) {
-    attrs.push(encodeDynamicAuthorizationAttribute(attribute));
+    attrs.push(encodeCustomAttributeValue(attribute));
   }
 
   return attrs;
@@ -400,21 +394,105 @@ function normalizeHostValue(host: string): string {
   if (normalized.startsWith("[") && normalized.endsWith("]")) {
     normalized = normalized.slice(1, -1);
   }
-  if (normalized.startsWith("::ffff:")) {
-    normalized = normalized.slice(7);
+
+  const preserveIpv4MappedIpv6 = (value: string): string => {
+    if (!value.startsWith("::ffff:")) {
+      return value;
+    }
+
+    const mappedIpv4 = value.slice(7);
+    if (isIP(mappedIpv4) === 4) {
+      return mappedIpv4;
+    }
+
+    const segments = mappedIpv4.split(":");
+    if (segments.length !== 2) {
+      return value;
+    }
+
+    const upper = Number.parseInt(segments[0] ?? "", 16);
+    const lower = Number.parseInt(segments[1] ?? "", 16);
+    if (!Number.isInteger(upper) || !Number.isInteger(lower) || upper < 0 || upper > 0xffff || lower < 0 || lower > 0xffff) {
+      return value;
+    }
+
+    const ipv4Octets = [
+      upper >> 8,
+      upper & 0xff,
+      lower >> 8,
+      lower & 0xff,
+    ];
+
+    return ipv4Octets.join(".");
+  };
+
+  normalized = preserveIpv4MappedIpv6(normalized);
+
+  if (isIP(normalized) === 6) {
+    const parsed = SocketAddress.parse(`[${normalized}]:0`);
+    if (parsed?.family === "ipv6") {
+      normalized = preserveIpv4MappedIpv6(parsed.address.toLowerCase());
+    }
   }
+
   return normalized;
 }
 
-async function resolveExpectedSourceHosts(host: string): Promise<Set<string>> {
-  const expectedHosts = new Set<string>([normalizeHostValue(host)]);
+function createSocketForHost(host: string): ReturnType<typeof dgram.createSocket> {
+  const socketType = isIP(normalizeHostValue(host)) === 6 ? "udp6" : "udp4";
+  return dgram.createSocket(socketType);
+}
 
-  if (isIP(host) !== 0) {
+function isKnownHmacCompatibilityError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const errorCode = (error as NodeJS.ErrnoException).code;
+  if (
+    errorCode === "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE"
+    || errorCode === "ERR_CRYPTO_INVALID_KEYLEN"
+    || errorCode === "ERR_CRYPTO_FIPS_FORCED"
+    || errorCode === "ERR_OSSL_EVP_UNSUPPORTED"
+    || errorCode === "ERR_INVALID_ARG_TYPE"
+  ) {
+    return true;
+  }
+
+  return /hmac|digest|md5|crypto/i.test(error.message);
+}
+
+function handleMessageAuthenticatorComputationError(error: unknown, logger: Logger | undefined, context: string): void {
+  if (isKnownHmacCompatibilityError(error)) {
+    if (logger) {
+      logger.warn("[radius] optional Message-Authenticator computation failed; continuing", {
+        context,
+        error,
+      });
+    }
+    return;
+  }
+
+  if (logger) {
+    logger.error("[radius] unexpected Message-Authenticator computation failure", {
+      context,
+      error,
+    });
+  }
+
+  throw error;
+}
+
+async function resolveExpectedSourceHosts(host: string): Promise<Set<string>> {
+  const normalizedHost = normalizeHostValue(host);
+  const expectedHosts = new Set<string>([normalizedHost]);
+
+  if (isIP(normalizedHost) !== 0) {
     return expectedHosts;
   }
 
   try {
-    const records = await lookup(host, { all: true });
+    const records = await lookup(normalizedHost, { all: true });
     for (const record of records) {
       expectedHosts.add(normalizeHostValue(record.address));
     }
@@ -524,6 +602,8 @@ export async function radiusAuthenticate(
     throw new Error('RADIUS secret is required and cannot be empty');
   }
 
+  const targetHost = normalizeHostValue(host);
+
   validateExtractedAssignmentOptions(options);
 
   const port = options.port || 1812;
@@ -532,13 +612,13 @@ export async function radiusAuthenticate(
   const responseMessageAuthenticatorPolicy: ResponseMessageAuthenticatorPolicy =
     options.responseMessageAuthenticatorPolicy === "strict" ? "strict" : "compatibility";
   const expectedSourceHosts = validateResponseSource
-    ? await resolveExpectedSourceHosts(host)
+    ? await resolveExpectedSourceHosts(targetHost)
     : null;
 
   if (logger) logger.debug('[radius] authenticate start', { host, user: username });
 
   return new Promise((resolve, reject) => {
-    const client = dgram.createSocket("udp4");
+    const client = createSocketForHost(targetHost);
     const id = crypto.randomBytes(1).readUInt8(0);
     const authenticator = crypto.randomBytes(16);
 
@@ -633,6 +713,14 @@ export async function radiusAuthenticate(
       }
 
       const messageAuthenticatorValidation = validateResponseMessageAuthenticator(response, secret, authenticator);
+      if (responseMessageAuthenticatorPolicy === "strict" && !messageAuthenticatorValidation.present) {
+        if (logger) {
+          logger.warn('[radius] response Message-Authenticator missing in strict mode; dropping response');
+        }
+        resolve({ ok: false, raw: response.toString("hex"), error: 'malformed_response' });
+        return;
+      }
+
       if (messageAuthenticatorValidation.present && !messageAuthenticatorValidation.valid) {
         if (responseMessageAuthenticatorPolicy === "strict") {
           if (logger) {
@@ -786,11 +874,11 @@ export async function radiusAuthenticate(
         if (l < 2) break;
         attrOff += l;
       }
-    } catch {
-      // ignore hmac failures; some servers don't require Message-Authenticator
+    } catch (error: unknown) {
+      handleMessageAuthenticatorComputationError(error, logger, "access-request");
     }
 
-    client.send(packet, port, host, (err) => {
+    client.send(packet, port, targetHost, (err) => {
       if (err) {
         clearTimeout(timer);
         client.close();
@@ -812,17 +900,19 @@ export async function radiusStatusServerProbe(
     throw new Error('RADIUS secret is required and cannot be empty');
   }
 
+  const targetHost = normalizeHostValue(host);
+
   const port = options.port || 1812;
   const timeoutMs = options.timeoutMs || 5000;
   const validateResponseSource = options.validateResponseSource !== false;
   const expectedSourceHosts = validateResponseSource
-    ? await resolveExpectedSourceHosts(host)
+    ? await resolveExpectedSourceHosts(targetHost)
     : null;
 
   if (logger) logger.debug('[radius] status-server probe start', { host });
 
   return new Promise((resolve, reject) => {
-    const client = dgram.createSocket("udp4");
+    const client = createSocketForHost(targetHost);
     const id = crypto.randomBytes(1).readUInt8(0);
     const authenticator = crypto.randomBytes(16);
 
@@ -858,8 +948,8 @@ export async function radiusStatusServerProbe(
         if (l < 2) break;
         attrOff += l;
       }
-    } catch {
-      // ignore hmac failures; some servers don't require Message-Authenticator
+    } catch (error: unknown) {
+      handleMessageAuthenticatorComputationError(error, logger, "status-server-request");
     }
 
     const timer = setTimeout(() => {
@@ -878,6 +968,17 @@ export async function radiusStatusServerProbe(
       }
 
       const response = packetValidation.packet;
+
+      if (response.readUInt8(1) !== id) {
+        if (logger) {
+          logger.warn('[radius] received malformed status-server response (identifier mismatch)', {
+            expected: id,
+            actual: response.readUInt8(1),
+          });
+        }
+        resolve({ ok: false, raw: response.toString("hex"), error: "identifier_mismatch" });
+        return;
+      }
 
       if (
         validateResponseSource
@@ -922,7 +1023,7 @@ export async function radiusStatusServerProbe(
       reject(err);
     });
 
-    client.send(packet, port, host, (err) => {
+    client.send(packet, port, targetHost, (err) => {
       if (err) {
         clearTimeout(timer);
         client.close();
@@ -943,10 +1044,23 @@ export async function radiusAccounting(
     throw new Error("RADIUS secret is required and cannot be empty");
   }
 
+  const targetHost = normalizeHostValue(host);
+
   validateAccountingRequest(request);
 
   const port = options.accountingPort ?? options.port ?? 1813;
   const timeoutMs = options.timeoutMs ?? 5000;
+  const validateResponseSource = options.validateResponseSource !== false;
+  const expectedSourceHosts = validateResponseSource
+    ? await resolveExpectedSourceHosts(targetHost)
+    : null;
+
+  const attrs = buildAccountingAttributes(request);
+  const attrBuf = Buffer.concat(attrs);
+  const len = 20 + attrBuf.length;
+  if (len > 0xffff) {
+    throw new Error("[radius] accounting packet exceeds maximum RADIUS length");
+  }
 
   if (logger) {
     logger.debug("[radius] accounting start", {
@@ -958,15 +1072,8 @@ export async function radiusAccounting(
   }
 
   return new Promise((resolve, reject) => {
-    const client = dgram.createSocket("udp4");
+    const client = createSocketForHost(targetHost);
     const id = crypto.randomBytes(1).readUInt8(0);
-
-    const attrs = buildAccountingAttributes(request);
-    const attrBuf = Buffer.concat(attrs);
-    const len = 20 + attrBuf.length;
-    if (len > 0xffff) {
-      throw new Error("[radius] accounting packet exceeds maximum RADIUS length");
-    }
 
     const header = Buffer.alloc(20);
     header.writeUInt8(4, 0); // Accounting-Request
@@ -986,7 +1093,7 @@ export async function radiusAccounting(
       resolve({ ok: false, error: "timeout" });
     }, timeoutMs);
 
-    client.on("message", (msg) => {
+    client.on("message", (msg, remoteInfo) => {
       clearTimeout(timer);
       client.close();
 
@@ -1000,6 +1107,23 @@ export async function radiusAccounting(
 
       if (response.readUInt8(1) !== id) {
         resolve({ ok: false, raw: response.toString("hex"), error: "identifier_mismatch" });
+        return;
+      }
+
+      if (
+        validateResponseSource
+        && expectedSourceHosts
+        && !isResponseSourceValid(remoteInfo, expectedSourceHosts, port)
+      ) {
+        if (logger) {
+          logger.warn("[radius] received accounting response from unexpected source", {
+            expectedHosts: [...expectedSourceHosts],
+            expectedPort: port,
+            actualHost: remoteInfo.address,
+            actualPort: remoteInfo.port,
+          });
+        }
+        resolve({ ok: false, raw: response.toString("hex"), error: "malformed_response" });
         return;
       }
 
@@ -1039,7 +1163,7 @@ export async function radiusAccounting(
       reject(err);
     });
 
-    client.send(packet, port, host, (err) => {
+    client.send(packet, port, targetHost, (err) => {
       if (err) {
         clearTimeout(timer);
         client.close();
@@ -1061,6 +1185,8 @@ async function sendDynamicAuthorization(
     throw new Error("RADIUS secret is required and cannot be empty");
   }
 
+  const targetHost = normalizeHostValue(host);
+
   validateDynamicAuthorizationRequest(request);
 
   const port = options.dynamicAuthorizationPort ?? options.port ?? 3799;
@@ -1076,7 +1202,7 @@ async function sendDynamicAuthorization(
   }
 
   return new Promise((resolve, reject) => {
-    const client = dgram.createSocket("udp4");
+    const client = createSocketForHost(targetHost);
     const id = crypto.randomBytes(1).readUInt8(0);
     const requestAuthenticator = crypto.randomBytes(16);
 
@@ -1167,7 +1293,7 @@ async function sendDynamicAuthorization(
       reject(err);
     });
 
-    client.send(packet, port, host, (err) => {
+    client.send(packet, port, targetHost, (err) => {
       if (err) {
         clearTimeout(timer);
         client.close();
