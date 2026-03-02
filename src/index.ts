@@ -1,3 +1,3 @@
 export * from "./types";
 export * from "./client";
-export { radiusAuthenticate, radiusAccounting, radiusCoa, radiusDisconnect } from "./protocol";
+export { radiusAuthenticate, radiusAccounting, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from "./protocol";

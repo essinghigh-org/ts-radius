@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import * as publicApi from '../src/index';
 import { RadiusClient } from '../src/client';
-import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect } from '../src/protocol';
+import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from '../src/protocol';
 import { ConsoleLogger } from '../src/types';
 
 describe('Public API compatibility contract', () => {
@@ -12,7 +12,8 @@ describe('Public API compatibility contract', () => {
       'radiusAccounting',
       'radiusAuthenticate',
       'radiusCoa',
-      'radiusDisconnect'
+      'radiusDisconnect',
+      'radiusStatusServerProbe'
     ]);
   });
 
@@ -22,6 +23,7 @@ describe('Public API compatibility contract', () => {
     expect(publicApi.radiusAuthenticate).toBe(radiusAuthenticate);
     expect(publicApi.radiusCoa).toBe(radiusCoa);
     expect(publicApi.radiusDisconnect).toBe(radiusDisconnect);
+    expect(publicApi.radiusStatusServerProbe).toBe(radiusStatusServerProbe);
     expect(publicApi.ConsoleLogger).toBe(ConsoleLogger);
   });
 });
