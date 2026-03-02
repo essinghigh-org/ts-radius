@@ -1,15 +1,30 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { RadiusClient } from '../src/client';
-import type { RadiusConfig, RadiusResult } from '../src/types';
+import type { RadiusConfig, RadiusResult, RadiusProtocolOptions } from '../src/types';
 
 // State for mock
 let responsiveHosts: Set<string> = new Set();
 // Hosts that return Access-Reject (still alive)
 let rejectingHosts: Set<string> = new Set();
+let authCalls: {
+  host: string;
+  username: string;
+  password: string;
+  options: RadiusProtocolOptions;
+  logger: unknown;
+}[] = [];
 
 // Mock the protocol layer
 void mock.module('../src/protocol', () => ({
-  radiusAuthenticate: async (host: string): Promise<RadiusResult> => {
+  radiusAuthenticate: async (
+    host: string,
+    username: string,
+    password: string,
+    options: RadiusProtocolOptions,
+    logger?: unknown
+  ): Promise<RadiusResult> => {
+    authCalls.push({ host, username, password, options, logger });
+
     if (rejectingHosts.has(host)) {
       // Simulate Access-Reject (server alive but auth failed)
       return { ok: false, error: 'access_reject' };
@@ -39,6 +54,7 @@ describe('RadiusClient Failover', () => {
   beforeEach(() => {
     responsiveHosts = new Set(['10.0.0.1']);
     rejectingHosts = new Set();
+    authCalls = [];
     client = new RadiusClient(config);
   });
 
@@ -60,6 +76,39 @@ describe('RadiusClient Failover', () => {
 
     // Let's verify default state first.
     expect(client.getActiveHost()).toBe('10.0.0.1');
+  });
+
+  test('authenticate forwards username/password and expected protocol options', async () => {
+    const result = await client.authenticate('alice', 'hunter2');
+    expect(result.ok).toBe(true);
+
+    const userCall = authCalls.find(
+      (call) => call.username === 'alice' && call.password === 'hunter2'
+    );
+
+    expect(userCall).toBeDefined();
+
+    if (!userCall) {
+      throw new Error('Expected a protocol call with supplied username/password');
+    }
+
+    expect(userCall.host).toBe('10.0.0.1');
+    expect(userCall.options).toEqual({
+      secret: 'secret',
+      port: 1812,
+      timeoutMs: 100,
+      assignmentAttributeId: undefined,
+      vendorId: undefined,
+      vendorType: undefined,
+      valuePattern: undefined
+    });
+
+    const loggerCandidate = userCall.logger as Record<string, unknown> | null;
+    expect(loggerCandidate).not.toBeNull();
+    expect(typeof loggerCandidate?.debug).toBe('function');
+    expect(typeof loggerCandidate?.info).toBe('function');
+    expect(typeof loggerCandidate?.warn).toBe('function');
+    expect(typeof loggerCandidate?.error).toBe('function');
   });
 
   test('failover activates next responsive host when current fails', async () => {
@@ -95,6 +144,7 @@ describe('RadiusClient Failover', () => {
 
     // Make 10.0.0.1 unresponsive, 10.0.0.2 responsive
     responsiveHosts = new Set(['10.0.0.2']);
+    authCalls = [];
 
     // Auth should fail with timeout on 10.0.0.1
     // And internally trigger failover
@@ -105,6 +155,14 @@ describe('RadiusClient Failover', () => {
     // Wait a bit for async failover to happen (it's triggered but not awaited in authenticate)
     // Using healthCheckTimeoutMs from config + buffer
     await new Promise(r => setTimeout(r, healthTimeoutMs + 50));
+
+    const activeHostProbe = authCalls.find(
+      (call) =>
+        call.host === '10.0.0.1' &&
+        call.username === config.healthCheckUser &&
+        call.password === config.healthCheckPassword
+    );
+    expect(activeHostProbe).toBeDefined();
 
     // Should have switched to 10.0.0.2
     expect(client.getActiveHost()).toBe('10.0.0.2');
