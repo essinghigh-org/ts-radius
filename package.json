@@ -19,7 +19,10 @@
   "scripts": {
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix --max-warnings=0",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "verify:fast": "bun run lint && bun run typecheck",
+    "verify": "bun run verify:fast && bun test"
   },
   "peerDependencies": {
     "typescript": "^5"
