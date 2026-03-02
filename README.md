@@ -59,8 +59,8 @@ try {
     username: "username",
     sessionId: "session-123",
     sessionTime: 300,
-    inputOctets: 1024,
-    outputOctets: 2048
+    inputOctets64: 0x1_0000_0200n,
+    outputOctets64: 0x1_0000_0400n
   });
 
   await client.accountingStop({
@@ -141,6 +141,18 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 - `responseLengthValidationPolicy` is available on low-level protocol functions:
   - `strict`: declared RADIUS length must equal UDP datagram length.
   - `allow_trailing_bytes`: accepts trailing bytes and parses only the declared packet length.
+
+### Accounting 64-bit octet counters
+
+- `RadiusAccountingRequest` supports `inputOctets64` and `outputOctets64` as `bigint` values in the range `[0, 2^64 - 1]`.
+- `inputOctets64` is encoded as:
+  - `Acct-Input-Octets` (Type 42) = low 32-bit word
+  - `Acct-Input-Gigawords` (Type 52) = high 32-bit word
+- `outputOctets64` is encoded as:
+  - `Acct-Output-Octets` (Type 43) = low 32-bit word
+  - `Acct-Output-Gigawords` (Type 53) = high 32-bit word
+- If both legacy 32-bit (`inputOctets`/`outputOctets`) and 64-bit (`inputOctets64`/`outputOctets64`) fields are provided, the 64-bit fields take precedence.
+- When using `inputOctets64` or `outputOctets64`, do not supply conflicting custom attributes (`42/52` or `43/53`) in `attributes`.
 
 ### Assignment extraction knobs
 

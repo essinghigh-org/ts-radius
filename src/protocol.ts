@@ -41,6 +41,9 @@ const SESSION_ACCOUNTING_STATUS_TYPES: ReadonlySet<RadiusSessionAccountingStatus
   "Interim-Update",
 ]);
 
+const UINT32_MASK_BIGINT = 0xffff_ffffn;
+const UINT64_MAX_BIGINT = 0xffff_ffff_ffff_ffffn;
+
 const DISCONNECT_REQUEST_CODE = 40;
 const DISCONNECT_ACK_CODE = 41;
 const DISCONNECT_NAK_CODE = 42;
@@ -77,6 +80,17 @@ interface DynamicAuthorizationCodes {
 
 function isUint32(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+
+function isUint64(value: bigint): boolean {
+  return value >= 0n && value <= UINT64_MAX_BIGINT;
+}
+
+function splitUint64ToWords(value: bigint): { lowWord: number; highWord: number } {
+  return {
+    lowWord: Number(value & UINT32_MASK_BIGINT),
+    highWord: Number((value >> 32n) & UINT32_MASK_BIGINT),
+  };
 }
 
 function isRadiusAttributeType(value: number): boolean {
@@ -327,6 +341,31 @@ function validateAccountingRequest(request: RadiusAccountingRequest): void {
     }
   }
 
+  const octetCounter64Fields: Array<[string, unknown]> = [
+    ["inputOctets64", request.inputOctets64],
+    ["outputOctets64", request.outputOctets64],
+  ];
+
+  for (const [fieldName, fieldValue] of octetCounter64Fields) {
+    if (fieldValue !== undefined && (typeof fieldValue !== "bigint" || !isUint64(fieldValue))) {
+      throw new Error(`[radius] accounting request.${fieldName} must be uint64`);
+    }
+  }
+
+  const customAccountingTypes = new Set((request.attributes ?? []).map((attribute) => attribute.type));
+
+  if (request.inputOctets64 !== undefined && (customAccountingTypes.has(42) || customAccountingTypes.has(52))) {
+    throw new Error(
+      "[radius] accounting request.attributes cannot include Acct-Input-Octets (42) or Acct-Input-Gigawords (52) when inputOctets64 is provided"
+    );
+  }
+
+  if (request.outputOctets64 !== undefined && (customAccountingTypes.has(43) || customAccountingTypes.has(53))) {
+    throw new Error(
+      "[radius] accounting request.attributes cannot include Acct-Output-Octets (43) or Acct-Output-Gigawords (53) when outputOctets64 is provided"
+    );
+  }
+
   for (const attribute of request.attributes ?? []) {
     if (!isRadiusAttributeType(attribute.type)) {
       throw new Error("[radius] accounting attribute type must be an integer between 1 and 255");
@@ -354,12 +393,23 @@ function buildAccountingAttributes(request: RadiusAccountingRequest): Buffer[] {
   if (request.delayTime !== undefined) {
     attrs.push(encodeIntegerAttribute(41, request.delayTime));
   }
-  if (request.inputOctets !== undefined) {
+
+  if (request.inputOctets64 !== undefined) {
+    const { lowWord, highWord } = splitUint64ToWords(request.inputOctets64);
+    attrs.push(encodeIntegerAttribute(42, lowWord));
+    attrs.push(encodeIntegerAttribute(52, highWord));
+  } else if (request.inputOctets !== undefined) {
     attrs.push(encodeIntegerAttribute(42, request.inputOctets));
   }
-  if (request.outputOctets !== undefined) {
+
+  if (request.outputOctets64 !== undefined) {
+    const { lowWord, highWord } = splitUint64ToWords(request.outputOctets64);
+    attrs.push(encodeIntegerAttribute(43, lowWord));
+    attrs.push(encodeIntegerAttribute(53, highWord));
+  } else if (request.outputOctets !== undefined) {
     attrs.push(encodeIntegerAttribute(43, request.outputOctets));
   }
+
   if (request.sessionTime !== undefined) {
     attrs.push(encodeIntegerAttribute(46, request.sessionTime));
   }

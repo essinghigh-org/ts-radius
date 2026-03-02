@@ -121,6 +121,55 @@ function getServerPort(server: dgram.Socket): number {
 describe("Accounting protocol", () => {
   const sharedSecret = "super-secret";
 
+  async function captureAccountingRequestAttributes(request: RadiusAccountingRequest): Promise<Map<number, Buffer[]>> {
+    const server = await bindServer();
+    let capturedPacket: Buffer | undefined;
+
+    server.on("message", (msg, rinfo) => {
+      capturedPacket = Buffer.from(msg);
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 5);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting("127.0.0.1", request, {
+        secret: sharedSecret,
+        port: getServerPort(server),
+        timeoutMs: 500
+      });
+
+      expect(result.ok).toBe(true);
+
+      if (!capturedPacket) {
+        throw new Error("Expected a captured request packet");
+      }
+
+      return parseAttributes(capturedPacket);
+    } finally {
+      await closeSocket(server);
+    }
+  }
+
+  async function expectAccountingRequestRejection(
+    request: RadiusAccountingRequest,
+    expectedMessage: string
+  ): Promise<void> {
+    try {
+      await radiusAccounting("127.0.0.1", request, {
+        secret: sharedSecret,
+        timeoutMs: 10
+      });
+
+      throw new Error("Expected radiusAccounting to reject");
+    } catch (error: unknown) {
+      if (!(error instanceof Error)) {
+        throw error;
+      }
+
+      expect(error.message).toBe(expectedMessage);
+    }
+  }
+
   test("builds Accounting-Request packet for Start and validates Accounting-Response", async () => {
     const server = await bindServer();
     const receivedPackets: Buffer[] = [];
@@ -267,6 +316,119 @@ describe("Accounting protocol", () => {
     } finally {
       await closeSocket(server);
     }
+  });
+
+  describe("64-bit accounting octet counter ergonomics", () => {
+    const uint64EncodingCases: Array<{ label: string; value: bigint; expectedLow: number; expectedHigh: number }> = [
+      {
+        label: "zero",
+        value: 0n,
+        expectedLow: 0,
+        expectedHigh: 0
+      },
+      {
+        label: "2^32-1",
+        value: 0xffff_ffffn,
+        expectedLow: 0xffff_ffff,
+        expectedHigh: 0
+      },
+      {
+        label: "2^32",
+        value: 0x1_0000_0000n,
+        expectedLow: 0,
+        expectedHigh: 1
+      },
+      {
+        label: "large value",
+        value: 0x1234_5678_9abc_def0n,
+        expectedLow: 0x9abc_def0,
+        expectedHigh: 0x1234_5678
+      }
+    ];
+
+    for (const testCase of uint64EncodingCases) {
+      test(`encodes input/output 64-bit octets for ${testCase.label}`, async () => {
+        const attributes = await captureAccountingRequestAttributes({
+          username: "alice",
+          sessionId: `session-64-${testCase.label}`,
+          statusType: "Interim-Update",
+          inputOctets64: testCase.value,
+          outputOctets64: testCase.value
+        } as RadiusAccountingRequest);
+
+        expect(readIntegerAttribute(attributes, 42)).toBe(testCase.expectedLow);
+        expect(readIntegerAttribute(attributes, 52)).toBe(testCase.expectedHigh);
+        expect(readIntegerAttribute(attributes, 43)).toBe(testCase.expectedLow);
+        expect(readIntegerAttribute(attributes, 53)).toBe(testCase.expectedHigh);
+      });
+    }
+
+    test("prefers 64-bit octet counters when both legacy and 64-bit fields are provided", async () => {
+      const attributes = await captureAccountingRequestAttributes({
+        username: "alice",
+        sessionId: "session-64-precedence",
+        statusType: "Interim-Update",
+        inputOctets: 777,
+        outputOctets: 888,
+        inputOctets64: 0x1_0000_0002n,
+        outputOctets64: 0x2_0000_0003n
+      } as RadiusAccountingRequest);
+
+      expect(readIntegerAttribute(attributes, 42)).toBe(2);
+      expect(readIntegerAttribute(attributes, 52)).toBe(1);
+      expect(readIntegerAttribute(attributes, 43)).toBe(3);
+      expect(readIntegerAttribute(attributes, 53)).toBe(2);
+    });
+
+    test("rejects negative 64-bit octet counters", async () => {
+      await expectAccountingRequestRejection(
+        {
+          username: "alice",
+          sessionId: "session-64-negative",
+          statusType: "Interim-Update",
+          inputOctets64: -1n
+        } as RadiusAccountingRequest,
+        "[radius] accounting request.inputOctets64 must be uint64"
+      );
+    });
+
+    test("rejects 64-bit octet counters above uint64", async () => {
+      await expectAccountingRequestRejection(
+        {
+          username: "alice",
+          sessionId: "session-64-overflow",
+          statusType: "Interim-Update",
+          outputOctets64: 0x1_0000_0000_0000_0000n
+        } as RadiusAccountingRequest,
+        "[radius] accounting request.outputOctets64 must be uint64"
+      );
+    });
+
+    test("rejects conflicting custom octet/gigawords attributes when inputOctets64 is provided", async () => {
+      await expectAccountingRequestRejection(
+        {
+          username: "alice",
+          sessionId: "session-64-conflict-input",
+          statusType: "Interim-Update",
+          inputOctets64: 9n,
+          attributes: [{ type: 52, value: 1 }]
+        } as RadiusAccountingRequest,
+        "[radius] accounting request.attributes cannot include Acct-Input-Octets (42) or Acct-Input-Gigawords (52) when inputOctets64 is provided"
+      );
+    });
+
+    test("rejects conflicting custom octet/gigawords attributes when outputOctets64 is provided", async () => {
+      await expectAccountingRequestRejection(
+        {
+          username: "alice",
+          sessionId: "session-64-conflict-output",
+          statusType: "Interim-Update",
+          outputOctets64: 9n,
+          attributes: [{ type: 53, value: 1 }]
+        } as RadiusAccountingRequest,
+        "[radius] accounting request.attributes cannot include Acct-Output-Octets (43) or Acct-Output-Gigawords (53) when outputOctets64 is provided"
+      );
+    });
   });
 
   test("returns authenticator_mismatch for tampered Accounting-Response packets", async () => {

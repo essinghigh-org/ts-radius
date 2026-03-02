@@ -187,7 +187,19 @@ interface RadiusAccountingRequestFields {
   sessionId?: string;
   sessionTime?: number;
   inputOctets?: number;
+  /**
+   * 64-bit octet counter encoded into Acct-Input-Octets (low word) and
+   * Acct-Input-Gigawords (high word). When provided alongside inputOctets,
+   * this value takes precedence.
+   */
+  inputOctets64?: bigint;
   outputOctets?: number;
+  /**
+   * 64-bit octet counter encoded into Acct-Output-Octets (low word) and
+   * Acct-Output-Gigawords (high word). When provided alongside outputOctets,
+   * this value takes precedence.
+   */
+  outputOctets64?: bigint;
   inputPackets?: number;
   outputPackets?: number;
   delayTime?: number;
