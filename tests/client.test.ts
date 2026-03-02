@@ -2,14 +2,26 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { RadiusClient } from '../src/client';
 import type { RadiusConfig, RadiusResult, RadiusProtocolOptions } from '../src/types';
 
+interface RadiusStatusProbeResult {
+  ok: boolean;
+  error?: string;
+}
+
 // State for mock
 let responsiveHosts: Set<string> = new Set();
 // Hosts that return Access-Reject (still alive)
 let rejectingHosts: Set<string> = new Set();
+let statusResponsiveHosts: Set<string> = new Set();
+let statusUnsupportedHosts: Set<string> = new Set();
 let authCalls: {
   host: string;
   username: string;
   password: string;
+  options: RadiusProtocolOptions;
+  logger: unknown;
+}[] = [];
+let statusCalls: {
+  host: string;
   options: RadiusProtocolOptions;
   logger: unknown;
 }[] = [];
@@ -33,6 +45,23 @@ void mock.module('../src/protocol', () => ({
       // Simulate timeout
       return { ok: false, error: 'timeout' };
     }
+    return { ok: true };
+  },
+  radiusStatusServerProbe: async (
+    host: string,
+    options: RadiusProtocolOptions,
+    logger?: unknown
+  ): Promise<RadiusStatusProbeResult> => {
+    statusCalls.push({ host, options, logger });
+
+    if (statusUnsupportedHosts.has(host)) {
+      return { ok: false, error: 'unknown_code' };
+    }
+
+    if (!statusResponsiveHosts.has(host)) {
+      return { ok: false, error: 'timeout' };
+    }
+
     return { ok: true };
   }
 }));
@@ -83,7 +112,10 @@ describe('RadiusClient Failover', () => {
   beforeEach(() => {
     responsiveHosts = new Set(['10.0.0.1']);
     rejectingHosts = new Set();
+    statusResponsiveHosts = new Set(['10.0.0.1']);
+    statusUnsupportedHosts = new Set();
     authCalls = [];
+    statusCalls = [];
     client = new RadiusClient(config);
   });
 
@@ -204,5 +236,160 @@ describe('RadiusClient Failover', () => {
     );
 
     expect(client.getActiveHost()).toBe('10.0.0.1');
+  });
+
+  test('authenticate retries timeout results with exponential backoff', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 3,
+        initialDelayMs: 25,
+        backoffMultiplier: 2,
+        maxDelayMs: 1000,
+        jitterRatio: 0
+      }
+    });
+
+    responsiveHosts = new Set();
+    authCalls = [];
+
+    const startedAt = Date.now();
+    const result = await retryClient.authenticate('retry-user', 'retry-pass');
+    const elapsedMs = Date.now() - startedAt;
+
+    const retryUserCalls = authCalls.filter((call) => call.username === 'retry-user');
+
+    expect(retryUserCalls).toHaveLength(3);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('timeout');
+    expect(elapsedMs).toBeGreaterThanOrEqual(75);
+
+    retryClient.shutdown();
+  });
+
+  test('authenticate applies jitter to retry backoff delay', async () => {
+    const originalRandom = Math.random;
+    Math.random = () => 1;
+
+    try {
+      const retryClient = new RadiusClient({
+        ...config,
+        hosts: ['10.0.0.1'],
+        healthCheckIntervalMs: 60000,
+        retry: {
+          maxAttempts: 2,
+          initialDelayMs: 40,
+          backoffMultiplier: 2,
+          maxDelayMs: 1000,
+          jitterRatio: 0.5
+        }
+      });
+
+      responsiveHosts = new Set();
+      authCalls = [];
+
+      const startedAt = Date.now();
+      const result = await retryClient.authenticate('jitter-user', 'retry-pass');
+      const elapsedMs = Date.now() - startedAt;
+
+      const jitterUserCalls = authCalls.filter((call) => call.username === 'jitter-user');
+
+      expect(jitterUserCalls).toHaveLength(2);
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('timeout');
+      // Base delay (40ms) + max positive jitter (20ms)
+      expect(elapsedMs).toBeGreaterThanOrEqual(60);
+
+      retryClient.shutdown();
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
+  test('authenticate can fail over and succeed within the same call when retries are enabled', async () => {
+    responsiveHosts = new Set(['10.0.0.1', '10.0.0.2']);
+
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    });
+
+    // First host times out, second host responds.
+    responsiveHosts = new Set(['10.0.0.2']);
+    authCalls = [];
+
+    const result = await retryClient.authenticate('inline-failover-user', 'pass');
+
+    const userCalls = authCalls
+      .filter((call) => call.username === 'inline-failover-user')
+      .map((call) => call.host);
+
+    expect(result.ok).toBe(true);
+    expect(userCalls).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(retryClient.getActiveHost()).toBe('10.0.0.2');
+
+    retryClient.shutdown();
+  });
+
+  test('failover uses Status-Server probing when configured', async () => {
+    const statusClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      healthCheckProbeMode: 'status-server'
+    });
+
+    statusResponsiveHosts = new Set(['10.0.0.2']);
+    responsiveHosts = new Set();
+    authCalls = [];
+    statusCalls = [];
+
+    const newHost = await statusClient.failover();
+
+    expect(newHost).toBe('10.0.0.2');
+    expect(statusCalls.some((call) => call.host === '10.0.0.2')).toBe(true);
+
+    const authProbeCalls = authCalls.filter(
+      (call) => call.host === '10.0.0.2' && call.username === config.healthCheckUser
+    );
+    expect(authProbeCalls).toHaveLength(0);
+
+    statusClient.shutdown();
+  });
+
+  test('status-server probing falls back to auth probe for compatibility when unsupported', async () => {
+    const statusClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      healthCheckProbeMode: 'status-server'
+    });
+
+    statusResponsiveHosts = new Set();
+    statusUnsupportedHosts = new Set(['10.0.0.2']);
+    responsiveHosts = new Set(['10.0.0.2']);
+    rejectingHosts = new Set(['10.0.0.2']);
+    authCalls = [];
+    statusCalls = [];
+
+    const newHost = await statusClient.failover();
+
+    expect(newHost).toBe('10.0.0.2');
+    expect(statusCalls.some((call) => call.host === '10.0.0.2')).toBe(true);
+
+    const fallbackAuthProbe = authCalls.find(
+      (call) => call.host === '10.0.0.2' && call.username === config.healthCheckUser
+    );
+    expect(fallbackAuthProbe).toBeDefined();
+
+    statusClient.shutdown();
   });
 });
