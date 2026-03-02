@@ -4,7 +4,7 @@ A standards-compliant RADIUS client for TypeScript/Bun, extracted from a product
 
 ## Features
 
-- **Standards Compliant**: Supports RFC 2865 (PAP authentication) and RFC 2869.
+- **Standards Compliant**: Supports RFC 2865 (PAP/CHAP authentication) and RFC 2869.
 - **Accounting Support**: Sends RFC 2866 Accounting-Request packets (Start, Interim-Update, Stop).
 - **Dynamic Authorization**: Supports RFC 5176 CoA and Disconnect requests (ACK/NAK + Error-Cause).
 - **Failover**: Automatic failover to backup hosts on timeout.
@@ -105,6 +105,9 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `accountingPort` | `number` | `1813` | RADIUS accounting port used by `sendAccounting`, `accountingStart`, `accountingInterim`, and `accountingStop`. |
 | `dynamicAuthorizationPort` | `number` | `3799` | CoA/Disconnect UDP port used by `sendCoa` and `sendDisconnect`. |
 | `timeoutMs` | `number` | `5000` | Request timeout in milliseconds. |
+| `authMethod` | `'pap' \| 'chap'` | `'pap'` | Access-Request password encoding mode. |
+| `chapId` | `number` | random `0..255` | Optional deterministic CHAP identifier override when `authMethod` is `'chap'`. |
+| `chapChallenge` | `Buffer` | random 16 bytes | Optional deterministic CHAP challenge override when `authMethod` is `'chap'`. |
 | `healthCheckIntervalMs` | `number` | `1800000` | (30m) Interval for background health checks. |
 | `healthCheckProbeMode` | `'auth' \| 'status-server'` | `'auth'` | Probe mode for health checks. `'status-server'` uses RFC3539-oriented probes (see RFC 3539; also referenced by RFC 2865) and falls back to Access-Request auth probes (RFC 2865) for compatibility. |
 | `healthCheckTimeoutMs` | `number` | `5000` | Timeout for health-check probe requests. |

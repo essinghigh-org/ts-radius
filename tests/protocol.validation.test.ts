@@ -178,4 +178,73 @@ describe("protocol request/options validation", () => {
     ) as unknown as Promise<void>;
     await missingDynamicIdentifiersRejection;
   });
+
+  test("validates CHAP authentication options", async () => {
+    const invalidAuthMethodRejection = (
+      expect(
+        radiusAuthenticate(
+          "127.0.0.1",
+          "alice",
+          "password",
+          {
+            secret: "secret",
+            timeoutMs: 10,
+            authMethod: "mschapv2",
+          } as unknown as Parameters<typeof radiusAuthenticate>[3]
+        )
+      ).rejects.toThrow("[radius] authMethod must be 'pap' or 'chap'")
+    ) as unknown as Promise<void>;
+    await invalidAuthMethodRejection;
+
+    const invalidChapIdRejection = (
+      expect(
+        radiusAuthenticate(
+          "127.0.0.1",
+          "alice",
+          "password",
+          {
+            secret: "secret",
+            timeoutMs: 10,
+            authMethod: "chap",
+            chapId: 256,
+          } as unknown as Parameters<typeof radiusAuthenticate>[3]
+        )
+      ).rejects.toThrow("[radius] chapId must be an integer between 0 and 255")
+    ) as unknown as Promise<void>;
+    await invalidChapIdRejection;
+
+    const invalidChapChallengeTypeRejection = (
+      expect(
+        radiusAuthenticate(
+          "127.0.0.1",
+          "alice",
+          "password",
+          {
+            secret: "secret",
+            timeoutMs: 10,
+            authMethod: "chap",
+            chapChallenge: "not-a-buffer",
+          } as unknown as Parameters<typeof radiusAuthenticate>[3]
+        )
+      ).rejects.toThrow("[radius] chapChallenge must be a Buffer")
+    ) as unknown as Promise<void>;
+    await invalidChapChallengeTypeRejection;
+
+    const invalidChapChallengeLengthRejection = (
+      expect(
+        radiusAuthenticate(
+          "127.0.0.1",
+          "alice",
+          "password",
+          {
+            secret: "secret",
+            timeoutMs: 10,
+            authMethod: "chap",
+            chapChallenge: Buffer.alloc(0),
+          }
+        )
+      ).rejects.toThrow("[radius] chapChallenge must be between 1 and 253 bytes")
+    ) as unknown as Promise<void>;
+    await invalidChapChallengeLengthRejection;
+  });
 });

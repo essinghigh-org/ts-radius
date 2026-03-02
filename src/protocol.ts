@@ -20,6 +20,7 @@ import type {
   RadiusDynamicAuthorizationAttribute,
   RadiusDynamicAuthorizationRequestBase,
   RadiusDynamicAuthorizationResult,
+  RadiusAuthMethod,
   RadiusProtocolOptions,
   RadiusResult,
   ResponseLengthValidationPolicy,
@@ -159,6 +160,86 @@ function encodeIntegerAttribute(type: number, value: number): Buffer {
   const buffer = Buffer.alloc(4);
   buffer.writeUInt32BE(value, 0);
   return encodeRadiusAttribute(type, buffer);
+}
+
+function resolveAuthenticationMethod(options: RadiusProtocolOptions): RadiusAuthMethod {
+  const authMethod: unknown = options.authMethod;
+
+  if (authMethod === undefined || authMethod === "pap") {
+    return "pap";
+  }
+
+  if (authMethod === "chap") {
+    return "chap";
+  }
+
+  throw new Error("[radius] authMethod must be 'pap' or 'chap'");
+}
+
+function buildPapPasswordValue(password: string, secret: string, authenticator: Buffer): Buffer {
+  const passwordBuffer = Buffer.from(password, "utf8");
+  const blockCount = Math.ceil(passwordBuffer.length / 16) || 1;
+  const paddedPassword = Buffer.alloc(blockCount * 16, 0);
+  passwordBuffer.copy(paddedPassword);
+
+  const encryptedPassword = Buffer.alloc(paddedPassword.length);
+  // For each 16-byte block, MD5(secret + previous) where previous is authenticator for block 0,
+  // and the previous encrypted block for subsequent blocks (RFC2865 section 5.2).
+  let previousBlock = authenticator;
+  for (let blockIndex = 0; blockIndex < blockCount; blockIndex++) {
+    const digest = crypto
+      .createHash("md5")
+      .update(Buffer.concat([Buffer.from(secret, "utf8"), previousBlock]))
+      .digest();
+
+    for (let byteIndex = 0; byteIndex < 16; byteIndex++) {
+      const blockOffset = blockIndex * 16 + byteIndex;
+      const encryptedByte = paddedPassword.readUInt8(blockOffset) ^ digest.readUInt8(byteIndex);
+      encryptedPassword.writeUInt8(encryptedByte, blockOffset);
+    }
+
+    previousBlock = encryptedPassword.subarray(blockIndex * 16, blockIndex * 16 + 16);
+  }
+
+  return encryptedPassword;
+}
+
+function resolveChapIdentifier(options: RadiusProtocolOptions): number {
+  const chapId = options.chapId ?? crypto.randomBytes(1).readUInt8(0);
+
+  if (!Number.isInteger(chapId) || chapId < 0 || chapId > 0xff) {
+    throw new Error("[radius] chapId must be an integer between 0 and 255");
+  }
+
+  return chapId;
+}
+
+function resolveChapChallenge(options: RadiusProtocolOptions): Buffer {
+  const chapChallenge = options.chapChallenge;
+
+  if (chapChallenge === undefined) {
+    return crypto.randomBytes(16);
+  }
+
+  if (!Buffer.isBuffer(chapChallenge)) {
+    throw new Error("[radius] chapChallenge must be a Buffer");
+  }
+
+  if (chapChallenge.length < 1 || chapChallenge.length > 253) {
+    throw new Error("[radius] chapChallenge must be between 1 and 253 bytes");
+  }
+
+  return Buffer.from(chapChallenge);
+}
+
+function buildChapPasswordValue(password: string, chapId: number, chapChallenge: Buffer): Buffer {
+  const chapIdBuffer = Buffer.from([chapId]);
+  const chapDigest = crypto
+    .createHash("md5")
+    .update(Buffer.concat([chapIdBuffer, Buffer.from(password, "utf8"), chapChallenge]))
+    .digest();
+
+  return Buffer.concat([chapIdBuffer, chapDigest]);
 }
 
 function encodeCustomAttributeValue(
@@ -473,7 +554,7 @@ function mapErrorCauseSymbol(errorCause: number | undefined): RadiusErrorCauseSy
 }
 
 // Minimal RADIUS client using UDP for Access-Request/Accept exchange.
-// This is intentionally small and supports only PAP (User-Password) and Class attribute extraction.
+// This is intentionally small and supports PAP/CHAP authentication and Class attribute extraction.
 
 const MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE = 80;
 const MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH = 18;
@@ -867,6 +948,7 @@ async function radiusAuthenticateRequest(
   const targetHost = normalizeHostValue(host);
 
   validateExtractedAssignmentOptions(options);
+  const authMethod = resolveAuthenticationMethod(options);
 
   const port = options.port || 1812;
   const timeoutMs = options.timeoutMs || 5000;
@@ -890,25 +972,19 @@ async function radiusAuthenticateRequest(
     const userBuf = Buffer.from(username, "utf8");
     attrs.push(Buffer.concat([Buffer.from([1, userBuf.length + 2]), userBuf]));
 
-    // User-Password (type 2) - PAP per RFC2865 with proper 16-byte block chaining
-    const pwdBuf = Buffer.from(password, "utf8");
-    const blockCount = Math.ceil(pwdBuf.length / 16) || 1;
-    const padded = Buffer.alloc(blockCount * 16, 0);
-    pwdBuf.copy(padded);
-    const xored = Buffer.alloc(padded.length);
-    // For each 16-byte block, MD5(secret + previous) where previous is authenticator for block 0,
-    // and the previous encrypted block for subsequent blocks (RFC2865 section 5.2).
-    let prev = authenticator;
-    for (let b = 0; b < blockCount; b++) {
-      const md5 = crypto.createHash("md5").update(Buffer.concat([Buffer.from(secret, "utf8"), prev])).digest();
-      for (let i = 0; i < 16; i++) {
-        const blockOffset = b * 16 + i;
-        const xorByte = padded.readUInt8(blockOffset) ^ md5.readUInt8(i);
-        xored.writeUInt8(xorByte, blockOffset);
-      }
-      prev = xored.subarray(b * 16, b * 16 + 16);
+    if (authMethod === "chap") {
+      // CHAP-Password (type 3): 1-octet CHAP identifier + 16-octet MD5 digest.
+      const chapId = resolveChapIdentifier(options);
+      const chapChallenge = resolveChapChallenge(options);
+      const chapPasswordValue = buildChapPasswordValue(password, chapId, chapChallenge);
+
+      attrs.push(encodeRadiusAttribute(3, chapPasswordValue));
+      attrs.push(encodeRadiusAttribute(60, chapChallenge));
+    } else {
+      // User-Password (type 2) - PAP per RFC2865 with proper 16-byte block chaining
+      const papPasswordValue = buildPapPasswordValue(password, secret, authenticator);
+      attrs.push(encodeRadiusAttribute(2, papPasswordValue));
     }
-    attrs.push(Buffer.concat([Buffer.from([2, xored.length + 2]), xored]));
 
     if (continuation?.stateHex !== undefined) {
       attrs.push(encodeRadiusAttribute(24, Buffer.from(continuation.stateHex, "hex")));
