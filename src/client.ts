@@ -105,6 +105,7 @@ export class RadiusClient {
       vendorType: this.config.vendorType,
       valuePattern: this.config.valuePattern,
       validateResponseSource: this.config.validateResponseSource,
+      responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
       responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
     };
 
@@ -259,7 +260,10 @@ export class RadiusClient {
           secret: this.config.secret,
           port: accountingPort,
           accountingPort,
-          timeoutMs: timeoutMs
+          timeoutMs: timeoutMs,
+          validateResponseSource: this.config.validateResponseSource,
+          responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
+          responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
         };
 
         const result = await this.protocol.radiusAccounting(host, request, protocolOptions, this.logger);
@@ -348,7 +352,10 @@ export class RadiusClient {
         secret: this.config.secret,
         port: dynamicAuthorizationPort,
         dynamicAuthorizationPort,
-        timeoutMs
+        timeoutMs,
+        validateResponseSource: this.config.validateResponseSource,
+        responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
+        responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
       };
 
       const result = await protocolCall(host, request, protocolOptions, this.logger);

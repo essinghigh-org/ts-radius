@@ -332,6 +332,39 @@ describe('RadiusClient Failover', () => {
     expect(userCall.logger).toBeDefined();
   });
 
+  test('authenticate forwards advanced protocol response validation options', async () => {
+    const forwardingClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      validateResponseSource: false,
+      responseLengthValidationPolicy: 'allow_trailing_bytes',
+      responseMessageAuthenticatorPolicy: 'strict'
+    }, undefined, { protocol: protocolMock });
+
+    try {
+      const result = await forwardingClient.authenticate('advanced-auth-user', 'hunter2');
+      expect(result.ok).toBe(true);
+
+      const userCall = authCalls.find(
+        (call) => call.username === 'advanced-auth-user' && call.password === 'hunter2'
+      );
+
+      expect(userCall).toBeDefined();
+
+      if (!userCall) {
+        throw new Error('Expected protocol authenticate call for advanced option forwarding');
+      }
+
+      expect(userCall.options).toMatchObject({
+        validateResponseSource: false,
+        responseLengthValidationPolicy: 'allow_trailing_bytes',
+        responseMessageAuthenticatorPolicy: 'strict'
+      });
+    } finally {
+      forwardingClient.shutdown();
+    }
+  });
+
   test('authenticate logging avoids emitting raw username PII', async () => {
     const { logger, debugEntries } = createInMemoryLogger();
     const loggingClient = new RadiusClient(config, logger, { protocol: protocolMock });
@@ -848,6 +881,41 @@ describe('RadiusClient Failover', () => {
     expect(call.logger).toBeDefined();
   });
 
+  test('sendCoa forwards advanced protocol response validation options', async () => {
+    const forwardingClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      validateResponseSource: false,
+      responseLengthValidationPolicy: 'allow_trailing_bytes',
+      responseMessageAuthenticatorPolicy: 'strict'
+    }, undefined, { protocol: protocolMock });
+
+    try {
+      const sessionId = 'session-coa-advanced-forwarding';
+      const result = await forwardingClient.sendCoa({
+        username: 'alice',
+        sessionId
+      });
+
+      expect(result.ok).toBe(true);
+
+      const call = coaCalls.find((entry) => entry.request.sessionId === sessionId);
+      expect(call).toBeDefined();
+
+      if (!call) {
+        throw new Error('Expected a CoA protocol call for advanced option forwarding');
+      }
+
+      expect(call.options).toMatchObject({
+        validateResponseSource: false,
+        responseLengthValidationPolicy: 'allow_trailing_bytes',
+        responseMessageAuthenticatorPolicy: 'strict'
+      });
+    } finally {
+      forwardingClient.shutdown();
+    }
+  });
+
   test('sendDisconnect forwards request and expected protocol options', async () => {
     const result = await client.sendDisconnect({
       username: 'alice',
@@ -873,6 +941,41 @@ describe('RadiusClient Failover', () => {
       timeoutMs: 100
     });
     expect(call.logger).toBeDefined();
+  });
+
+  test('sendDisconnect forwards advanced protocol response validation options', async () => {
+    const forwardingClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      validateResponseSource: false,
+      responseLengthValidationPolicy: 'allow_trailing_bytes',
+      responseMessageAuthenticatorPolicy: 'strict'
+    }, undefined, { protocol: protocolMock });
+
+    try {
+      const sessionId = 'session-disconnect-advanced-forwarding';
+      const result = await forwardingClient.sendDisconnect({
+        username: 'alice',
+        sessionId
+      });
+
+      expect(result.ok).toBe(true);
+
+      const call = disconnectCalls.find((entry) => entry.request.sessionId === sessionId);
+      expect(call).toBeDefined();
+
+      if (!call) {
+        throw new Error('Expected a Disconnect protocol call for advanced option forwarding');
+      }
+
+      expect(call.options).toMatchObject({
+        validateResponseSource: false,
+        responseLengthValidationPolicy: 'allow_trailing_bytes',
+        responseMessageAuthenticatorPolicy: 'strict'
+      });
+    } finally {
+      forwardingClient.shutdown();
+    }
   });
 
   test('sendCoa timeout triggers failover using dynamic-authorization reachability', async () => {
@@ -949,6 +1052,42 @@ describe('RadiusClient Failover', () => {
       port: 1813,
       timeoutMs: 100
     });
+  });
+
+  test('sendAccounting forwards advanced protocol response validation options', async () => {
+    const forwardingClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      validateResponseSource: false,
+      responseLengthValidationPolicy: 'allow_trailing_bytes',
+      responseMessageAuthenticatorPolicy: 'strict'
+    }, undefined, { protocol: protocolMock });
+
+    try {
+      const sessionId = 'session-accounting-advanced-forwarding';
+      const result = await forwardingClient.sendAccounting({
+        username: 'alice',
+        sessionId,
+        statusType: 'Interim-Update'
+      });
+
+      expect(result.ok).toBe(true);
+
+      const call = accountingCalls.find((entry) => entry.request.sessionId === sessionId);
+      expect(call).toBeDefined();
+
+      if (!call) {
+        throw new Error('Expected an Accounting protocol call for advanced option forwarding');
+      }
+
+      expect(call.options).toMatchObject({
+        validateResponseSource: false,
+        responseLengthValidationPolicy: 'allow_trailing_bytes',
+        responseMessageAuthenticatorPolicy: 'strict'
+      });
+    } finally {
+      forwardingClient.shutdown();
+    }
   });
 
   test('accounting probe session IDs are collision-safe and retain health- prefix', async () => {
