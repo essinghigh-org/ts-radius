@@ -48,6 +48,58 @@ function isUint32(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
 }
 
+function isRadiusAttributeType(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 255;
+}
+
+function isVendorType(value: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value <= 255;
+}
+
+function validateExtractedAssignmentOptions(options: RadiusProtocolOptions): void {
+  const assignmentAttributeId = options.assignmentAttributeId ?? 25;
+  if (!isRadiusAttributeType(assignmentAttributeId)) {
+    throw new Error("[radius] assignmentAttributeId must be an integer between 1 and 255");
+  }
+
+  const hasVendorId = options.vendorId !== undefined;
+  const hasVendorType = options.vendorType !== undefined;
+  const vendorId = options.vendorId;
+  const vendorType = options.vendorType;
+
+  if (assignmentAttributeId === 26 && hasVendorId !== hasVendorType) {
+    throw new Error("[radius] vendorId and vendorType are both required when assignmentAttributeId is 26");
+  }
+
+  if (hasVendorId && (vendorId === undefined || !isUint32(vendorId))) {
+    throw new Error("[radius] vendorId must be a uint32");
+  }
+
+  if (hasVendorType && (vendorType === undefined || !isVendorType(vendorType))) {
+    throw new Error("[radius] vendorType must be an integer between 0 and 255");
+  }
+}
+
+function extractAssignmentValue(rawValue: string, valuePattern: string | undefined, logger?: Logger): string | undefined {
+  if (!valuePattern) {
+    return rawValue;
+  }
+
+  try {
+    const regex = new RegExp(valuePattern);
+    const match = rawValue.match(regex);
+    return match?.[1];
+  } catch (error: unknown) {
+    if (logger) {
+      logger.warn("[radius] invalid valuePattern; falling back to full attribute value", {
+        valuePattern,
+        error,
+      });
+    }
+    return rawValue;
+  }
+}
+
 function encodeRadiusAttribute(type: number, value: Buffer): Buffer {
   if (!Number.isInteger(type) || type < 1 || type > 255) {
     throw new Error(`[radius] Invalid attribute type: ${String(type)}`);
@@ -232,6 +284,10 @@ function validateAccountingRequest(request: RadiusAccountingRequest): void {
   }
 
   for (const attribute of request.attributes ?? []) {
+    if (!isRadiusAttributeType(attribute.type)) {
+      throw new Error("[radius] accounting attribute type must be an integer between 1 and 255");
+    }
+
     if (typeof attribute.value === "number" && !isUint32(attribute.value)) {
       throw new Error(`[radius] accounting attribute ${String(attribute.type)} number values must be uint32`);
     }
@@ -294,6 +350,10 @@ function validateDynamicAuthorizationRequest(request: RadiusDynamicAuthorization
   }
 
   for (const attribute of request.attributes ?? []) {
+    if (!isRadiusAttributeType(attribute.type)) {
+      throw new Error("[radius] dynamic authorization attribute type must be an integer between 1 and 255");
+    }
+
     if (typeof attribute.value === "number" && !isUint32(attribute.value)) {
       throw new Error(`[radius] dynamic authorization attribute ${String(attribute.type)} number values must be uint32`);
     }
@@ -463,6 +523,9 @@ export async function radiusAuthenticate(
   if (!secret) {
     throw new Error('RADIUS secret is required and cannot be empty');
   }
+
+  validateExtractedAssignmentOptions(options);
+
   const port = options.port || 1812;
   const timeoutMs = options.timeoutMs || 5000;
   const validateResponseSource = options.validateResponseSource !== false;
@@ -633,7 +696,7 @@ export async function radiusAuthenticate(
           let isTargetAttribute = false;
           let extractedValue: string | undefined = undefined;
 
-          const targetAttributeId = options.assignmentAttributeId || 25;
+          const targetAttributeId = options.assignmentAttributeId ?? 25;
 
           if (t === targetAttributeId) {
             if (t === 26 && options.vendorId !== undefined && options.vendorType !== undefined) {
@@ -644,38 +707,27 @@ export async function radiusAuthenticate(
                 const vendorLength = value.readUInt8(5);
 
                 if (vendorId === options.vendorId && vendorType === options.vendorType) {
-                  const vendorValue = value.subarray(6, 6 + vendorLength - 2).toString("utf8");
-
-                  if (options.valuePattern) {
-                    // Extract value using regex pattern
-                    const regex = new RegExp(options.valuePattern);
-                    const match = vendorValue.match(regex);
-                    if (match && match[1]) {
-                      extractedValue = match[1];
+                  if (vendorLength >= 2 && value.length >= 4 + vendorLength) {
+                    const vendorValue = value.subarray(6, 4 + vendorLength).toString("utf8");
+                    extractedValue = extractAssignmentValue(vendorValue, options.valuePattern, logger);
+                    if (extractedValue !== undefined) {
                       isTargetAttribute = true;
                     }
-                  } else {
-                    // Use the full vendor value
-                    extractedValue = vendorValue;
-                    isTargetAttribute = true;
+                  } else if (logger) {
+                    logger.warn("[radius] invalid vendor-specific assignment attribute length; skipping extraction", {
+                      vendorId,
+                      vendorType,
+                      vendorLength,
+                      attributeLength: value.length,
+                    });
                   }
                 }
               }
             } else {
               // Regular attribute parsing
               const attributeValue = value.toString("utf8");
-
-              if (options.valuePattern) {
-                // Extract value using regex pattern
-                const regex = new RegExp(options.valuePattern);
-                const match = attributeValue.match(regex);
-                if (match && match[1]) {
-                  extractedValue = match[1];
-                  isTargetAttribute = true;
-                }
-              } else {
-                // Use the full attribute value
-                extractedValue = attributeValue;
+              extractedValue = extractAssignmentValue(attributeValue, options.valuePattern, logger);
+              if (extractedValue !== undefined) {
                 isTargetAttribute = true;
               }
             }
