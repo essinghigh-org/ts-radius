@@ -10,6 +10,7 @@ import {
   type RadiusCoaResult,
   type RadiusConfig,
   type RadiusDynamicAuthorizationRequestBase,
+  type RadiusDynamicAuthorizationRequestIdentity,
   type RadiusDynamicAuthorizationResult,
   type RadiusDisconnectRequest,
   type RadiusDisconnectResult,
@@ -191,6 +192,12 @@ export class RadiusClient {
 
   private createDynamicAuthorizationRequestIdentifier(): number {
     return randomBytes(1).readUInt8(0);
+  }
+
+  private createDynamicAuthorizationRequestIdentity(): RadiusDynamicAuthorizationRequestIdentity {
+    return {
+      identifier: this.createDynamicAuthorizationRequestIdentifier(),
+    };
   }
 
   private createAccountingRequestIdentity(): RadiusAccountingRequestIdentity {
@@ -406,8 +413,8 @@ export class RadiusClient {
       ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
       : 1;
     const retryIdentityMode = this.getDynamicAuthorizationRetryIdentityMode();
-    const stableRequestIdentifiersByHost = retryIdentityMode === "stable"
-      ? new Map<string, number>()
+    const stableRequestIdentitiesByHost = retryIdentityMode === "stable"
+      ? new Map<string, RadiusDynamicAuthorizationRequestIdentity>()
       : undefined;
 
     let lastResult: RadiusDynamicAuthorizationResult = {
@@ -429,12 +436,12 @@ export class RadiusClient {
       });
 
       try {
-        let requestIdentifier: number | undefined;
-        if (stableRequestIdentifiersByHost) {
-          requestIdentifier = stableRequestIdentifiersByHost.get(host);
-          if (requestIdentifier === undefined) {
-            requestIdentifier = this.createDynamicAuthorizationRequestIdentifier();
-            stableRequestIdentifiersByHost.set(host, requestIdentifier);
+        let requestIdentity: RadiusDynamicAuthorizationRequestIdentity | undefined;
+        if (stableRequestIdentitiesByHost) {
+          requestIdentity = stableRequestIdentitiesByHost.get(host);
+          if (requestIdentity === undefined) {
+            requestIdentity = this.createDynamicAuthorizationRequestIdentity();
+            stableRequestIdentitiesByHost.set(host, requestIdentity);
           }
         }
 
@@ -447,11 +454,7 @@ export class RadiusClient {
           responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
           responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
           dynamicAuthorizationEventTimestampWindowSeconds: this.config.dynamicAuthorizationEventTimestampWindowSeconds,
-          dynamicAuthorizationRequestIdentity: requestIdentifier === undefined
-            ? undefined
-            : {
-              identifier: requestIdentifier,
-            },
+          dynamicAuthorizationRequestIdentity: requestIdentity,
         };
 
         const result = await protocolCall(host, request, protocolOptions, this.logger);

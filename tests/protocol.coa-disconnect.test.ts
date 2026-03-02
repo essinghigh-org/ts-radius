@@ -189,6 +189,13 @@ function getServerPort(server: dgram.Socket): number {
   return address.port;
 }
 
+async function reserveUdpPort(): Promise<number> {
+  const socket = await bindServer();
+  const port = getServerPort(socket);
+  await closeSocket(socket);
+  return port;
+}
+
 describe("CoA/Disconnect protocol", () => {
   const sharedSecret = "super-secret";
 
@@ -244,7 +251,9 @@ describe("CoA/Disconnect protocol", () => {
   test("honors caller-provided dynamic authorization request identity", async () => {
     const server = await bindServer();
     const receivedPackets: Buffer[] = [];
+    const receivedSourcePorts: number[] = [];
     const fixedIdentifier = 0x4f;
+    const fixedSourcePort = await reserveUdpPort();
     const fixedAuthenticator = Buffer.from([
       0x01, 0x02, 0x03, 0x04,
       0x05, 0x06, 0x07, 0x08,
@@ -254,6 +263,7 @@ describe("CoA/Disconnect protocol", () => {
 
     server.on("message", (msg, rinfo) => {
       receivedPackets.push(Buffer.from(msg));
+      receivedSourcePorts.push(rinfo.port);
       const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44);
       server.send(response, rinfo.port, rinfo.address);
     });
@@ -271,7 +281,8 @@ describe("CoA/Disconnect protocol", () => {
           timeoutMs: 500,
           dynamicAuthorizationRequestIdentity: {
             identifier: fixedIdentifier,
-            requestAuthenticator: fixedAuthenticator
+            requestAuthenticator: fixedAuthenticator,
+            sourcePort: fixedSourcePort
           }
         }
       );
@@ -287,6 +298,8 @@ describe("CoA/Disconnect protocol", () => {
 
       expect(requestPacket.readUInt8(1)).toBe(fixedIdentifier);
       expect(requestPacket.subarray(4, 20).equals(fixedAuthenticator)).toBe(true);
+      expect(receivedSourcePorts).toHaveLength(1);
+      expect(receivedSourcePorts[0]).toBe(fixedSourcePort);
     } finally {
       await closeSocket(server);
     }
@@ -617,7 +630,7 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
-  test("validates oversized dynamic authorization packet before socket allocation", async () => {
+  test("validates dynamic authorization packet length above RFC5176 4096-byte maximum before socket allocation", async () => {
     const originalCreateSocket = dgram.createSocket;
     let createSocketCalls = 0;
 
@@ -628,7 +641,7 @@ describe("CoA/Disconnect protocol", () => {
 
     (dgram as unknown as { createSocket: typeof dgram.createSocket }).createSocket = createSocketSpy;
 
-    const oversizedAttributes = Array.from({ length: 260 }, (_, index) => ({
+    const oversizedAttributes = Array.from({ length: 16 }, (_, index) => ({
       type: (index % 255) + 1,
       value: "x".repeat(253)
     }));
@@ -656,7 +669,7 @@ describe("CoA/Disconnect protocol", () => {
 
       expect(capturedError).toBeInstanceOf(Error);
       expect((capturedError as Error).message).toBe(
-        "[radius] dynamic authorization packet exceeds maximum RADIUS length"
+        "[radius] dynamic authorization packet exceeds RFC5176 maximum length (4096 bytes)"
       );
 
       expect(createSocketCalls).toBe(0);

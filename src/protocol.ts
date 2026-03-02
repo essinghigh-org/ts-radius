@@ -20,6 +20,7 @@ import type {
   RadiusErrorCauseSymbol,
   RadiusDynamicAuthorizationAttribute,
   RadiusDynamicAuthorizationRequestBase,
+  RadiusDynamicAuthorizationRequestIdentity,
   RadiusDynamicAuthorizationResult,
   RadiusAuthMethod,
   RadiusProtocolOptions,
@@ -46,6 +47,7 @@ const SESSION_ACCOUNTING_STATUS_TYPES: ReadonlySet<RadiusSessionAccountingStatus
 const MAX_RADIUS_ATTRIBUTE_VALUE_LENGTH = 253;
 const MAX_PAP_PASSWORD_BYTES = 128;
 const MAX_ACCOUNTING_PACKET_LENGTH = 4095;
+const MAX_DYNAMIC_AUTHORIZATION_PACKET_LENGTH = 4096;
 const NAS_IP_ADDRESS_ATTRIBUTE_TYPE = 4;
 const NAS_IDENTIFIER_ATTRIBUTE_TYPE = 32;
 const DEFAULT_NAS_IP_ADDRESS_VALUE = Buffer.from([127, 0, 0, 1]);
@@ -629,7 +631,7 @@ function buildDynamicAuthorizationAttributes(request: RadiusDynamicAuthorization
 
 function resolveDynamicAuthorizationRequestIdentity(
   options: RadiusProtocolOptions
-): { identifier: number; requestAuthenticator?: Buffer } {
+): RadiusDynamicAuthorizationRequestIdentity {
   const identity = options.dynamicAuthorizationRequestIdentity;
   if (!identity) {
     return {
@@ -645,10 +647,14 @@ function resolveDynamicAuthorizationRequestIdentity(
     );
   }
 
+  if (identity.sourcePort !== undefined && !isUdpPort(identity.sourcePort)) {
+    throw new Error(
+      "[radius] dynamic authorization request identity.sourcePort must be an integer between 1 and 65535"
+    );
+  }
+
   if (requestAuthenticator === undefined) {
-    return {
-      identifier,
-    };
+    return identity;
   }
 
   if (!Buffer.isBuffer(requestAuthenticator) || requestAuthenticator.length !== 16) {
@@ -657,10 +663,7 @@ function resolveDynamicAuthorizationRequestIdentity(
     );
   }
 
-  return {
-    identifier,
-    requestAuthenticator: Buffer.from(requestAuthenticator)
-  };
+  return identity;
 }
 
 function resolveDynamicAuthorizationEventTimestampWindowSeconds(options: RadiusProtocolOptions): number {
@@ -1840,8 +1843,8 @@ async function sendDynamicAuthorization(
   const attrs = buildDynamicAuthorizationAttributes(request);
   const attrBuf = Buffer.concat(attrs);
   const len = 20 + attrBuf.length;
-  if (len > 0xffff) {
-    throw new Error("[radius] dynamic authorization packet exceeds maximum RADIUS length");
+  if (len > MAX_DYNAMIC_AUTHORIZATION_PACKET_LENGTH) {
+    throw new Error("[radius] dynamic authorization packet exceeds RFC5176 maximum length (4096 bytes)");
   }
 
   const expectedSourceHosts = validateResponseSource
@@ -1857,8 +1860,8 @@ async function sendDynamicAuthorization(
     });
   }
 
-  const { identifier: id, requestAuthenticator: requestAuthenticatorOverride } =
-    resolveDynamicAuthorizationRequestIdentity(options);
+  const requestIdentity = resolveDynamicAuthorizationRequestIdentity(options);
+  const { identifier: id, requestAuthenticator: requestAuthenticatorOverride } = requestIdentity;
 
   return new Promise((resolve, reject) => {
     const client = createSocketForHost(targetHost);
@@ -2008,13 +2011,35 @@ async function sendDynamicAuthorization(
       reject(err);
     });
 
-    client.send(packet, port, targetHost, (err) => {
-      if (err) {
-        clearTimeout(timer);
-        client.close();
-        reject(err);
-      }
-    });
+    const sendPacket = (): void => {
+      client.send(packet, port, targetHost, (err) => {
+        if (err) {
+          clearTimeout(timer);
+          client.close();
+          reject(err);
+        }
+      });
+    };
+
+    if (requestIdentity.sourcePort !== undefined) {
+      client.bind(requestIdentity.sourcePort, () => {
+        sendPacket();
+      });
+      return;
+    }
+
+    if (options.dynamicAuthorizationRequestIdentity) {
+      client.bind(0, () => {
+        const localAddress = client.address();
+        if (typeof localAddress !== "string") {
+          requestIdentity.sourcePort = localAddress.port;
+        }
+        sendPacket();
+      });
+      return;
+    }
+
+    sendPacket();
   });
 }
 
