@@ -7,6 +7,7 @@ import type {
   Logger,
   ParsedRadiusAttribute,
   RadiusAccountingRequest,
+  RadiusSessionAccountingStatusType,
   RadiusAccountingStatusType,
   RadiusCoaRequest,
   RadiusCoaResult,
@@ -26,8 +27,16 @@ import { decodeAttribute } from "./helpers";
 const ACCOUNTING_STATUS_VALUES: Record<RadiusAccountingStatusType, number> = {
   Start: 1,
   Stop: 2,
-  "Interim-Update": 3
+  "Interim-Update": 3,
+  "Accounting-On": 7,
+  "Accounting-Off": 8,
 };
+
+const SESSION_ACCOUNTING_STATUS_TYPES: ReadonlySet<RadiusSessionAccountingStatusType> = new Set([
+  "Start",
+  "Stop",
+  "Interim-Update",
+]);
 
 const DISCONNECT_REQUEST_CODE = 40;
 const DISCONNECT_ACK_CODE = 41;
@@ -271,13 +280,32 @@ function hasValidResponseAuthenticator(response: Buffer, requestAuthenticator: B
   return expectedAuthenticator.equals(responseAuthenticator);
 }
 
-function validateAccountingRequest(request: RadiusAccountingRequest): void {
-  if (!request.username || request.username.trim().length === 0) {
-    throw new Error("[radius] accounting request.username is required");
-  }
+function requiresAccountingSessionIdentifiers(
+  statusType: RadiusAccountingStatusType
+): statusType is RadiusSessionAccountingStatusType {
+  return SESSION_ACCOUNTING_STATUS_TYPES.has(statusType as RadiusSessionAccountingStatusType);
+}
 
-  if (!request.sessionId || request.sessionId.trim().length === 0) {
-    throw new Error("[radius] accounting request.sessionId is required");
+function validateAccountingRequest(request: RadiusAccountingRequest): void {
+  const hasUsername = typeof request.username === "string" && request.username.trim().length > 0;
+  const hasSessionId = typeof request.sessionId === "string" && request.sessionId.trim().length > 0;
+
+  if (requiresAccountingSessionIdentifiers(request.statusType)) {
+    if (!hasUsername) {
+      throw new Error("[radius] accounting request.username is required");
+    }
+
+    if (!hasSessionId) {
+      throw new Error("[radius] accounting request.sessionId is required");
+    }
+  } else {
+    if (request.username !== undefined && !hasUsername) {
+      throw new Error("[radius] accounting request.username cannot be empty");
+    }
+
+    if (request.sessionId !== undefined && !hasSessionId) {
+      throw new Error("[radius] accounting request.sessionId cannot be empty");
+    }
   }
 
   const integerFields: Array<[string, number | undefined]> = [
@@ -308,11 +336,17 @@ function validateAccountingRequest(request: RadiusAccountingRequest): void {
 }
 
 function buildAccountingAttributes(request: RadiusAccountingRequest): Buffer[] {
-  const attrs: Buffer[] = [
-    encodeStringAttribute(1, request.username),
-    encodeIntegerAttribute(40, ACCOUNTING_STATUS_VALUES[request.statusType]),
-    encodeStringAttribute(44, request.sessionId)
-  ];
+  const attrs: Buffer[] = [];
+
+  if (typeof request.username === "string" && request.username.trim().length > 0) {
+    attrs.push(encodeStringAttribute(1, request.username));
+  }
+
+  attrs.push(encodeIntegerAttribute(40, ACCOUNTING_STATUS_VALUES[request.statusType]));
+
+  if (typeof request.sessionId === "string" && request.sessionId.trim().length > 0) {
+    attrs.push(encodeStringAttribute(44, request.sessionId));
+  }
 
   if (request.delayTime !== undefined) {
     attrs.push(encodeIntegerAttribute(41, request.delayTime));

@@ -141,13 +141,15 @@ export interface RadiusProtocolOptions {
   responseLengthValidationPolicy?: ResponseLengthValidationPolicy;
 }
 
-export type RadiusAccountingStatusType = 'Start' | 'Stop' | 'Interim-Update';
+export type RadiusSessionAccountingStatusType = "Start" | "Stop" | "Interim-Update";
+export type RadiusOnOffAccountingStatusType = "Accounting-On" | "Accounting-Off";
+export type RadiusAccountingStatusType = RadiusSessionAccountingStatusType | RadiusOnOffAccountingStatusType;
 
 export type RadiusAccountingAttribute = RadiusAttribute;
 
-export interface RadiusAccountingRequestBase {
-  username: string;
-  sessionId: string;
+interface RadiusAccountingRequestFields {
+  username?: string;
+  sessionId?: string;
   sessionTime?: number;
   inputOctets?: number;
   outputOctets?: number;
@@ -158,9 +160,16 @@ export interface RadiusAccountingRequestBase {
   attributes?: RadiusAccountingAttribute[];
 }
 
-export interface RadiusAccountingRequest extends RadiusAccountingRequestBase {
-  statusType: RadiusAccountingStatusType;
+export interface RadiusAccountingRequestBase extends RadiusAccountingRequestFields {
+  username: string;
+  sessionId: string;
 }
+
+export type RadiusAccountingOnOffRequest = RadiusAccountingRequestFields;
+
+export type RadiusAccountingRequest =
+  | (RadiusAccountingRequestBase & { statusType: RadiusSessionAccountingStatusType })
+  | (RadiusAccountingOnOffRequest & { statusType: RadiusOnOffAccountingStatusType });
 
 export interface RadiusRetryOptions {
   /** Total auth attempts per call, including the first attempt (default: 1) */

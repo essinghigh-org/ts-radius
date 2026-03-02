@@ -163,6 +163,67 @@ describe("Accounting protocol", () => {
     }
   });
 
+  test("encodes Accounting-On and Accounting-Off status values without requiring session identifiers", async () => {
+    const server = await bindServer();
+    const receivedPackets: Buffer[] = [];
+
+    server.on("message", (msg, rinfo) => {
+      receivedPackets.push(Buffer.from(msg));
+      const response = buildAccountingResponsePacket(msg, sharedSecret, 5);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const accountingOnResult = await radiusAccounting(
+        "127.0.0.1",
+        {
+          statusType: "Accounting-On"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      const accountingOffResult = await radiusAccounting(
+        "127.0.0.1",
+        {
+          statusType: "Accounting-Off"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(accountingOnResult.ok).toBe(true);
+      expect(accountingOffResult.ok).toBe(true);
+      expect(receivedPackets).toHaveLength(2);
+
+      const accountingOnPacket = receivedPackets[0];
+      const accountingOffPacket = receivedPackets[1];
+
+      if (!accountingOnPacket || !accountingOffPacket) {
+        throw new Error("Expected captured request packets for Accounting-On and Accounting-Off");
+      }
+
+      const accountingOnAttributes = parseAttributes(accountingOnPacket);
+      const accountingOffAttributes = parseAttributes(accountingOffPacket);
+
+      expect(readIntegerAttribute(accountingOnAttributes, 40)).toBe(7);
+      expect(readIntegerAttribute(accountingOffAttributes, 40)).toBe(8);
+
+      expect(accountingOnAttributes.has(1)).toBe(false);
+      expect(accountingOnAttributes.has(44)).toBe(false);
+      expect(accountingOffAttributes.has(1)).toBe(false);
+      expect(accountingOffAttributes.has(44)).toBe(false);
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("supports generic accounting send with additional custom attributes", async () => {
     const server = await bindServer();
     const receivedPackets: Buffer[] = [];
