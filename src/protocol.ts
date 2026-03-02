@@ -1271,9 +1271,10 @@ async function sendDynamicAuthorization(
     });
   }
 
+  const { identifier: id, requestAuthenticator } = resolveDynamicAuthorizationRequestIdentity(options);
+
   return new Promise((resolve, reject) => {
     const client = createSocketForHost(targetHost);
-    const { identifier: id, requestAuthenticator } = resolveDynamicAuthorizationRequestIdentity(options);
 
     const header = Buffer.alloc(20);
     header.writeUInt8(codes.request, 0);

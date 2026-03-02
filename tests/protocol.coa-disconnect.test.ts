@@ -219,6 +219,119 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
+  test("validates dynamic authorization request identity identifier before socket allocation", async () => {
+    const originalCreateSocket = dgram.createSocket;
+    let createSocketCalls = 0;
+
+    const createSocketSpy = ((...args: Parameters<typeof dgram.createSocket>) => {
+      createSocketCalls += 1;
+      return originalCreateSocket(...args);
+    }) as typeof dgram.createSocket;
+
+    (dgram as unknown as { createSocket: typeof dgram.createSocket }).createSocket = createSocketSpy;
+
+    try {
+      let capturedError: unknown;
+
+      try {
+        await radiusCoa(
+          "127.0.0.1",
+          {
+            username: "alice",
+            sessionId: "session-invalid-identifier"
+          },
+          {
+            secret: sharedSecret,
+            timeoutMs: 10,
+            dynamicAuthorizationRequestIdentity: {
+              identifier: 0x100,
+              requestAuthenticator: Buffer.alloc(16, 0x11)
+            }
+          }
+        );
+      } catch (error: unknown) {
+        capturedError = error;
+      }
+
+      expect(capturedError).toBeInstanceOf(Error);
+      expect((capturedError as Error).message).toBe(
+        "[radius] dynamic authorization request identity.identifier must be an integer between 0 and 255"
+      );
+      expect(createSocketCalls).toBe(0);
+    } finally {
+      (dgram as unknown as { createSocket: typeof dgram.createSocket }).createSocket = originalCreateSocket;
+    }
+  });
+
+  test("validates dynamic authorization request identity requestAuthenticator before socket allocation", async () => {
+    const originalCreateSocket = dgram.createSocket;
+    let createSocketCalls = 0;
+
+    const createSocketSpy = ((...args: Parameters<typeof dgram.createSocket>) => {
+      createSocketCalls += 1;
+      return originalCreateSocket(...args);
+    }) as typeof dgram.createSocket;
+
+    (dgram as unknown as { createSocket: typeof dgram.createSocket }).createSocket = createSocketSpy;
+
+    try {
+      let shortBufferError: unknown;
+      try {
+        await radiusCoa(
+          "127.0.0.1",
+          {
+            username: "alice",
+            sessionId: "session-invalid-authenticator-length"
+          },
+          {
+            secret: sharedSecret,
+            timeoutMs: 10,
+            dynamicAuthorizationRequestIdentity: {
+              identifier: 7,
+              requestAuthenticator: Buffer.alloc(15, 0x22)
+            }
+          }
+        );
+      } catch (error: unknown) {
+        shortBufferError = error;
+      }
+
+      expect(shortBufferError).toBeInstanceOf(Error);
+      expect((shortBufferError as Error).message).toBe(
+        "[radius] dynamic authorization request identity.requestAuthenticator must be a 16-byte Buffer"
+      );
+
+      let invalidTypeError: unknown;
+      try {
+        await radiusCoa(
+          "127.0.0.1",
+          {
+            username: "alice",
+            sessionId: "session-invalid-authenticator-type"
+          },
+          {
+            secret: sharedSecret,
+            timeoutMs: 10,
+            dynamicAuthorizationRequestIdentity: {
+              identifier: 8,
+              requestAuthenticator: "not-a-buffer" as unknown as Buffer
+            }
+          }
+        );
+      } catch (error: unknown) {
+        invalidTypeError = error;
+      }
+
+      expect(invalidTypeError).toBeInstanceOf(Error);
+      expect((invalidTypeError as Error).message).toBe(
+        "[radius] dynamic authorization request identity.requestAuthenticator must be a 16-byte Buffer"
+      );
+      expect(createSocketCalls).toBe(0);
+    } finally {
+      (dgram as unknown as { createSocket: typeof dgram.createSocket }).createSocket = originalCreateSocket;
+    }
+  });
+
   test("extracts Error-Cause from CoA-NAK responses", async () => {
     const server = await bindServer();
 
