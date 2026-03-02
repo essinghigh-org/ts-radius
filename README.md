@@ -113,12 +113,13 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `healthCheckTimeoutMs` | `number` | `5000` | Timeout for health-check probe requests. |
 | `healthCheckUser` | `string` | (Required) | Username for health probes. |
 | `healthCheckPassword` | `string` | (Required) | Password for health probes. |
-| `retry` | `object` | `{ maxAttempts: 1 }` | Retry policy for transport failures during `authenticate` and accounting operations. |
-| `retry.maxAttempts` | `number` | `1` | Total attempts per call for `authenticate` and accounting operations, including the first. |
+| `retry` | `object` | `{ maxAttempts: 1 }` | Retry policy for transport failures during `authenticate`, accounting operations, `sendCoa`, and `sendDisconnect`. |
+| `retry.maxAttempts` | `number` | `1` | Total attempts per call for `authenticate`, accounting operations, `sendCoa`, and `sendDisconnect`, including the first. |
 | `retry.initialDelayMs` | `number` | `100` | Base delay before the first retry attempt (milliseconds). |
 | `retry.backoffMultiplier` | `number` | `2` | Exponential multiplier for retry delays. |
 | `retry.maxDelayMs` | `number` | `5000` | Maximum delay cap for retries (milliseconds). |
 | `retry.jitterRatio` | `number` | `0` | Symmetric jitter ratio in range `[0,1]` (e.g. `0.5` = ±50%). |
+| `dynamicAuthorizationRetryIdentityMode` | `'per_attempt' \| 'stable'` | `'per_attempt'` | CoA/Disconnect retry identity mode. `stable` reuses the same RFC5176 Identifier + Request Authenticator for all retries in a single call. |
 | `assignmentAttributeId` | `number` | `25` | Attribute ID to extract (e.g., 25 for Class). |
 | `vendorId` | `number` | `undefined` | Vendor-Id for VSA extraction when `assignmentAttributeId` is `26`. |
 | `vendorType` | `number` | `undefined` | Vendor-Type for VSA extraction when `assignmentAttributeId` is `26`. |
@@ -127,35 +128,35 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `responseMessageAuthenticatorPolicy` | `'compatibility' \| 'strict'` | `'compatibility'` | Access-response Message-Authenticator handling (`strict` rejects invalid/missing values). |
 | `responseLengthValidationPolicy` | `'strict' \| 'allow_trailing_bytes'` | `'strict'` | Low-level response length policy; `allow_trailing_bytes` trims extra datagram bytes beyond declared RADIUS length. |
 
-## Advanced operation behavior
+## Advanced options parity matrix
 
-### Retry policy scope
+| Operation / path | Retry behavior (`retry.*`) | Advanced options forwarded / applied | Notes |
+|---|---|---|---|
+| `authenticate` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `authMethod`, `chapId`, `chapChallenge`, `assignmentAttributeId`, `vendorId`, `vendorType`, `valuePattern` | `access_reject` and `access_challenge` are terminal for the call (no retry). Timeout still triggers async health verification/failover logic. |
+| `sendAccounting` (`accountingStart` / `accountingInterim` / `accountingStop` / `accountingOn` / `accountingOff`) | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy` | Uses `accountingPort` (or `port`, default 1813). Helpers map to `Acct-Status-Type` values, including `Accounting-On` and `Accounting-Off`. |
+| `sendCoa` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `dynamicAuthorizationRetryIdentityMode` | `coa_nak` is terminal (no retry). `dynamicAuthorizationRetryIdentityMode: "stable"` reuses one Identifier/Request-Authenticator across attempts. |
+| `sendDisconnect` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `dynamicAuthorizationRetryIdentityMode` | `disconnect_nak` is terminal (no retry). Same retry identity behavior as CoA. |
+| health probes (`failover` / background checks) | 🚫 `retry.*` is not used for probe calls (single probe attempt per host per cycle) | `healthCheckProbeMode`, `healthCheckTimeoutMs`, `validateResponseSource`; auth probes also use `authMethod`, `chapId`, `chapChallenge` | `healthCheckProbeMode: "status-server"` first uses `radiusStatusServerProbe`; non-healthy results/errors fall back to auth probes for compatibility. Probe paths currently use strict length handling (no `responseLengthValidationPolicy` forwarding). |
 
-- `retry.*` is applied to `authenticate`, `sendAccounting`, `accountingStart`, `accountingInterim`, and `accountingStop`.
-- Retries are triggered only for transport/protocol failures (`timeout`, `malformed_response`, `authenticator_mismatch`, `unknown_code`; plus `identifier_mismatch` for accounting).
-- `sendCoa` and `sendDisconnect` are single-attempt operations (no retry loop). Timeout still triggers health checks/failover logic.
+## Feature parity highlights
 
-### Validation policy scope
+| Feature | Public API surface | Runtime behavior |
+|---|---|---|
+| Access-Challenge continuation | `radiusAuthenticateWithContinuation`, `radiusContinueAuthenticate` | `maxChallengeRounds` defaults to 3. Continuation context carries `State`/`Proxy-State`; malformed/missing context returns `malformed_challenge_context`; limit overflow returns `challenge_round_limit_exceeded`. |
+| CHAP authentication | `authenticate` + auth health probes (including status-server fallback auth probes) | `authMethod: "chap"` enables CHAP credentials. `chapId` and `chapChallenge` can be set for deterministic behavior. |
+| Accounting On/Off operations | `accountingOn`, `accountingOff` (both call `sendAccounting`) | Encodes `Acct-Status-Type` as `Accounting-On` / `Accounting-Off`. `username` and `sessionId` are optional for On/Off variants. |
+| Dynamic authorization retry identity | `sendCoa`, `sendDisconnect`, `dynamicAuthorizationRetryIdentityMode` | `per_attempt` (default) uses a fresh identity each attempt; `stable` reuses one identity across retries in a single send call. |
+| 64-bit accounting counters | `sendAccounting` and accounting helpers | `inputOctets64` / `outputOctets64` are split into low/high words (`42/52`, `43/53`) and take precedence over 32-bit fields when both are provided. |
 
-- `validateResponseSource` defaults to `true`, and response-source validation is enforced for all protocol operations.
-- `responseMessageAuthenticatorPolicy` applies to Access responses (authentication + auth health probes).
-  - `compatibility` warns on invalid Message-Authenticator and continues.
-  - `strict` rejects missing/invalid Message-Authenticator as `malformed_response`.
-- `responseLengthValidationPolicy` is available on low-level protocol functions:
+### Validation policy notes
+
+- `validateResponseSource` defaults to `true` and is enforced for all top-level client operations.
+- `responseMessageAuthenticatorPolicy` affects Access responses (authentication and auth health probes):
+  - `compatibility`: warn on invalid Message-Authenticator and continue.
+  - `strict`: reject missing/invalid Message-Authenticator as `malformed_response`.
+- `responseLengthValidationPolicy` is forwarded to `authenticate`, accounting, CoA, and Disconnect operations:
   - `strict`: declared RADIUS length must equal UDP datagram length.
   - `allow_trailing_bytes`: accepts trailing bytes and parses only the declared packet length.
-
-### Accounting 64-bit octet counters
-
-- `RadiusAccountingRequest` supports `inputOctets64` and `outputOctets64` as `bigint` values in the range `[0, 2^64 - 1]`.
-- `inputOctets64` is encoded as:
-  - `Acct-Input-Octets` (Type 42) = low 32-bit word
-  - `Acct-Input-Gigawords` (Type 52) = high 32-bit word
-- `outputOctets64` is encoded as:
-  - `Acct-Output-Octets` (Type 43) = low 32-bit word
-  - `Acct-Output-Gigawords` (Type 53) = high 32-bit word
-- If both legacy 32-bit (`inputOctets`/`outputOctets`) and 64-bit (`inputOctets64`/`outputOctets64`) fields are provided, the 64-bit fields take precedence.
-- When using `inputOctets64` or `outputOctets64`, do not supply conflicting custom attributes (`42/52` or `43/53`) in `attributes`.
 
 ### Assignment extraction knobs
 
