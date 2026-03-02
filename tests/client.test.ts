@@ -218,6 +218,54 @@ describe('RadiusClient Failover', () => {
     expect(client.getActiveHost()).toBe('10.0.0.1');
   });
 
+  test('constructor rejects blank secret values', () => {
+    expect(() => {
+      new RadiusClient({
+        ...config,
+        secret: '   '
+      });
+    }).toThrow('[radius-client] config.secret is required');
+  });
+
+  test('constructor rejects blank health check credentials', () => {
+    expect(() => {
+      new RadiusClient({
+        ...config,
+        healthCheckUser: '   '
+      });
+    }).toThrow('[radius-client] health check credentials (healthCheckUser, healthCheckPassword) are required');
+
+    expect(() => {
+      new RadiusClient({
+        ...config,
+        healthCheckPassword: '\t'
+      });
+    }).toThrow('[radius-client] health check credentials (healthCheckUser, healthCheckPassword) are required');
+  });
+
+  test('constructor rejects configuration with no usable hosts', () => {
+    expect(() => {
+      new RadiusClient({
+        ...config,
+        host: '   ',
+        hosts: ['', '  ', '\t']
+      });
+    }).toThrow('[radius-client] at least one non-empty host is required');
+  });
+
+  test('host list fallback ignores blank entries and chooses first usable host', () => {
+    const hostEdgeClient = new RadiusClient({
+      ...config,
+      host: '   ',
+      hosts: ['  ', '', '10.0.0.9', '10.0.0.10'],
+      healthCheckIntervalMs: 60000
+    });
+
+    expect(hostEdgeClient.getActiveHost()).toBe('10.0.0.9');
+
+    hostEdgeClient.shutdown();
+  });
+
   test('authenticate forwards username/password and expected protocol options', async () => {
     const result = await client.authenticate('alice', 'hunter2');
     expect(result.ok).toBe(true);
@@ -346,6 +394,72 @@ describe('RadiusClient Failover', () => {
     expect(elapsedMs).toBeGreaterThanOrEqual(75);
 
     retryClient.shutdown();
+  });
+
+  test('authenticate does not retry non-retryable failures', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1', '10.0.0.2'],
+      healthCheckIntervalMs: 60000,
+      retry: {
+        maxAttempts: 3,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    });
+
+    responsiveHosts = new Set(['10.0.0.1', '10.0.0.2']);
+    rejectingHosts = new Set(['10.0.0.1']);
+    authCalls = [];
+
+    const result = await retryClient.authenticate('non-retryable-user', 'pass');
+
+    const nonRetryableUserCalls = authCalls.filter((call) => call.username === 'non-retryable-user');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('access_reject');
+    expect(nonRetryableUserCalls).toHaveLength(1);
+    expect(nonRetryableUserCalls[0]?.host).toBe('10.0.0.1');
+    expect(retryClient.getActiveHost()).toBe('10.0.0.1');
+
+    retryClient.shutdown();
+  });
+
+  test('failover returns null when another health operation stays in progress', async () => {
+    responsiveHosts = new Set(['10.0.0.2']);
+    authCalls = [];
+    (client as unknown as { inProgress: boolean }).inProgress = true;
+
+    const failoverResult = await client.failover();
+
+    const healthProbeCalls = authCalls.filter((call) => call.username === config.healthCheckUser);
+
+    expect(failoverResult).toBeNull();
+    expect(healthProbeCalls).toHaveLength(0);
+
+    (client as unknown as { inProgress: boolean }).inProgress = false;
+  });
+
+  test('failover waits for in-progress operation to complete and then proceeds', async () => {
+    responsiveHosts = new Set(['10.0.0.2']);
+    authCalls = [];
+    (client as unknown as { inProgress: boolean }).inProgress = true;
+
+    const unlockTimer = setTimeout(() => {
+      (client as unknown as { inProgress: boolean }).inProgress = false;
+    }, 20);
+
+    try {
+      const failoverResult = await client.failover();
+
+      expect(failoverResult).toBe('10.0.0.2');
+      expect(client.getActiveHost()).toBe('10.0.0.2');
+    } finally {
+      clearTimeout(unlockTimer);
+      (client as unknown as { inProgress: boolean }).inProgress = false;
+    }
   });
 
   test('authenticate treats NaN maxAttempts as one bounded attempt', async () => {
