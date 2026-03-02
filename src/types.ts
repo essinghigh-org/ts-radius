@@ -107,8 +107,8 @@ export interface RadiusDynamicAuthorizationRequestIdentity {
   identifier: number;
   /**
    * Optional fixed UDP source port for CoA/Disconnect sends.
-   * When omitted and an identity object is reused by caller code,
-   * implementations may resolve and persist an ephemeral source port.
+  * When omitted, the OS selects an ephemeral source port for each send.
+  * Protocol functions treat caller-provided identity objects as immutable.
    */
   sourcePort?: number;
   /**
@@ -124,8 +124,8 @@ export interface RadiusAccountingRequestIdentity {
   identifier: number;
   /**
    * Optional fixed UDP source port for Accounting-Request sends.
-   * When omitted and an identity object is reused by caller code,
-   * implementations may resolve and persist an ephemeral source port.
+   * When omitted, the OS selects an ephemeral source port for each send.
+   * Protocol functions treat caller-provided identity objects as immutable.
    */
   sourcePort?: number;
 }

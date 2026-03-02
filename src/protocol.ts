@@ -1719,7 +1719,8 @@ export async function radiusAccounting(
   const port = options.accountingPort ?? options.port ?? 1813;
   const timeoutMs = options.timeoutMs ?? 5000;
   const validateResponseSource = options.validateResponseSource !== false;
-  const requestIdentity = resolveAccountingRequestIdentity(options);
+  const resolvedRequestIdentity = resolveAccountingRequestIdentity(options);
+  const requestIdentity: RadiusAccountingRequestIdentity = { ...resolvedRequestIdentity };
   const responseValidationOptions: RadiusProtocolOptions = options.responseLengthValidationPolicy === undefined
     ? { ...options, responseLengthValidationPolicy: "allow_trailing_bytes" }
     : options;
@@ -1863,17 +1864,6 @@ export async function radiusAccounting(
       return;
     }
 
-    if (options.accountingRequestIdentity) {
-      client.bind(0, () => {
-        const localAddress = client.address();
-        if (typeof localAddress !== "string") {
-          requestIdentity.sourcePort = localAddress.port;
-        }
-        sendPacket();
-      });
-      return;
-    }
-
     sendPacket();
   });
 }
@@ -1923,7 +1913,8 @@ async function sendDynamicAuthorization(
     });
   }
 
-  const requestIdentity = resolveDynamicAuthorizationRequestIdentity(options);
+  const resolvedRequestIdentity = resolveDynamicAuthorizationRequestIdentity(options);
+  const requestIdentity: RadiusDynamicAuthorizationRequestIdentity = { ...resolvedRequestIdentity };
   const { identifier: id, requestAuthenticator: requestAuthenticatorOverride } = requestIdentity;
 
   return new Promise((resolve, reject) => {
@@ -2120,17 +2111,6 @@ async function sendDynamicAuthorization(
 
     if (requestIdentity.sourcePort !== undefined) {
       client.bind(requestIdentity.sourcePort, () => {
-        sendPacket();
-      });
-      return;
-    }
-
-    if (options.dynamicAuthorizationRequestIdentity) {
-      client.bind(0, () => {
-        const localAddress = client.address();
-        if (typeof localAddress !== "string") {
-          requestIdentity.sourcePort = localAddress.port;
-        }
         sendPacket();
       });
       return;

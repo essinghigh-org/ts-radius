@@ -215,7 +215,14 @@ describe("RadiusClient dynamic authorization stable retry authenticator integrat
       expect(firstRequest.subarray(4, 20).equals(firstExpectedAuthenticator)).toBe(true);
       expect(secondRequest.subarray(4, 20).equals(secondExpectedAuthenticator)).toBe(true);
       expect(secondRequest.subarray(4, 20).equals(firstRequest.subarray(4, 20))).toBe(true);
-      expect(capturedUserSourcePorts[0]).toBe(capturedUserSourcePorts[1]);
+      const firstSourcePort = capturedUserSourcePorts[0];
+      const secondSourcePort = capturedUserSourcePorts[1];
+      if (firstSourcePort === undefined || secondSourcePort === undefined) {
+        throw new Error("Expected captured same-host source ports for stable retry validation");
+      }
+
+      expect(firstSourcePort).toBeGreaterThan(0);
+      expect(secondSourcePort).toBe(firstSourcePort);
     } finally {
       client.shutdown();
       await closeSocket(server);
@@ -321,7 +328,15 @@ describe("RadiusClient dynamic authorization stable retry authenticator integrat
       expect(firstRequest.subarray(4, 20).equals(firstExpectedAuthenticator)).toBe(true);
       expect(secondRequest.subarray(4, 20).equals(secondExpectedAuthenticator)).toBe(true);
       expect(secondRequest.subarray(4, 20).equals(firstRequest.subarray(4, 20))).toBe(false);
-      expect(capturedUserSourcePorts[0]).not.toBe(capturedUserSourcePorts[1]);
+      const firstSourcePort = capturedUserSourcePorts[0];
+      const secondSourcePort = capturedUserSourcePorts[1];
+      if (firstSourcePort === undefined || secondSourcePort === undefined) {
+        throw new Error("Expected captured failover source ports for stable retry validation");
+      }
+
+      expect(firstSourcePort).toBeGreaterThan(0);
+      expect(secondSourcePort).toBeGreaterThan(0);
+      expect(secondSourcePort).not.toBe(firstSourcePort);
     } finally {
       client.shutdown();
       await closeSocket(server);
