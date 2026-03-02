@@ -529,6 +529,46 @@ describe('RadiusClient Failover', () => {
     retryClient.shutdown();
   });
 
+  for (const retryableError of ['malformed_response', 'authenticator_mismatch', 'unknown_code'] as const) {
+    test(`authenticate retries ${retryableError} failures when attempts remain`, async () => {
+      const retryClient = new RadiusClient({
+        ...config,
+        hosts: ['10.0.0.1'],
+        healthCheckIntervalMs: 60000,
+        retry: {
+          maxAttempts: 2,
+          initialDelayMs: 0,
+          backoffMultiplier: 1,
+          maxDelayMs: 0,
+          jitterRatio: 0
+        }
+      }, undefined, { protocol: protocolMock });
+
+      try {
+        const username = `auth-retry-${retryableError}`;
+
+        responsiveHosts = new Set(['10.0.0.1']);
+        rejectingHosts = new Set();
+        authCalls = [];
+        authResponseByUsername = new Map([
+          [username, [
+            { ok: false, error: retryableError },
+            { ok: true }
+          ]]
+        ]);
+
+        const result = await retryClient.authenticate(username, 'retry-pass');
+        const userCalls = authCalls.filter((call) => call.username === username);
+
+        expect(result.ok).toBe(true);
+        expect(userCalls).toHaveLength(2);
+        expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.1']);
+      } finally {
+        retryClient.shutdown();
+      }
+    });
+  }
+
   test('authenticate does not retry non-retryable failures', async () => {
     const retryClient = new RadiusClient({
       ...config,
@@ -999,6 +1039,37 @@ describe('RadiusClient Failover', () => {
     statusClient.shutdown();
   });
 
+  test('auth timeout probes omit responseLengthValidationPolicy forwarding and keep strict defaults', async () => {
+    const probeClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      responseLengthValidationPolicy: 'allow_trailing_bytes'
+    }, undefined, { protocol: protocolMock });
+
+    const internals = probeClient as unknown as {
+      activeHost: string | null;
+      onAuthTimeout: () => Promise<void>;
+    };
+
+    internals.activeHost = '10.0.0.1';
+
+    responsiveHosts = new Set(['10.0.0.1']);
+    authCalls = [];
+
+    await internals.onAuthTimeout();
+
+    const authProbeCall = authCalls.find((call) => call.username === config.healthCheckUser);
+    expect(authProbeCall).toBeDefined();
+
+    if (!authProbeCall) {
+      throw new Error('Expected auth timeout probe call to validate response length policy forwarding semantics');
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(authProbeCall.options, 'responseLengthValidationPolicy')).toBe(false);
+
+    probeClient.shutdown();
+  });
+
   test('sendCoa forwards request and expected protocol options', async () => {
     const result = await client.sendCoa({
       username: 'alice',
@@ -1208,6 +1279,49 @@ describe('RadiusClient Failover', () => {
     probeClient.shutdown();
   });
 
+  test('dynamic-authorization timeout probes omit responseLengthValidationPolicy forwarding and keep strict defaults', async () => {
+    const probeClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      responseLengthValidationPolicy: 'allow_trailing_bytes'
+    }, undefined, { protocol: protocolMock });
+
+    const internals = probeClient as unknown as {
+      activeHost: string | null;
+      onDynamicAuthorizationTimeout: (mode: 'coa' | 'disconnect') => Promise<void>;
+    };
+
+    internals.activeHost = '10.0.0.1';
+
+    responsiveCoaHosts = new Set(['10.0.0.1']);
+    responsiveDisconnectHosts = new Set(['10.0.0.1']);
+    coaCalls = [];
+    disconnectCalls = [];
+
+    await internals.onDynamicAuthorizationTimeout('coa');
+    await internals.onDynamicAuthorizationTimeout('disconnect');
+
+    const coaProbeCall = coaCalls.find((call) => call.request.username === config.healthCheckUser);
+    expect(coaProbeCall).toBeDefined();
+
+    if (!coaProbeCall) {
+      throw new Error('Expected CoA timeout probe call to validate response length policy forwarding semantics');
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(coaProbeCall.options, 'responseLengthValidationPolicy')).toBe(false);
+
+    const disconnectProbeCall = disconnectCalls.find((call) => call.request.username === config.healthCheckUser);
+    expect(disconnectProbeCall).toBeDefined();
+
+    if (!disconnectProbeCall) {
+      throw new Error('Expected Disconnect timeout probe call to validate response length policy forwarding semantics');
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(disconnectProbeCall.options, 'responseLengthValidationPolicy')).toBe(false);
+
+    probeClient.shutdown();
+  });
+
   test('sendCoa retries transient timeout failures with backoff and can recover', async () => {
     const retryClient = new RadiusClient({
       ...config,
@@ -1251,6 +1365,50 @@ describe('RadiusClient Failover', () => {
 
     retryClient.shutdown();
   });
+
+  for (const retryableError of ['malformed_response', 'identifier_mismatch', 'authenticator_mismatch', 'unknown_code'] as const) {
+    test(`sendCoa retries ${retryableError} failures when attempts remain`, async () => {
+      const retryClient = new RadiusClient({
+        ...config,
+        hosts: ['10.0.0.1'],
+        healthCheckIntervalMs: 60000,
+        retry: {
+          maxAttempts: 2,
+          initialDelayMs: 0,
+          backoffMultiplier: 1,
+          maxDelayMs: 0,
+          jitterRatio: 0
+        }
+      }, undefined, { protocol: protocolMock });
+
+      try {
+        const sessionId = `coa-retry-${retryableError}`;
+
+        responsiveCoaHosts = new Set(['10.0.0.1']);
+        coaCalls = [];
+        coaResponseBySessionId = new Map([
+          [sessionId, [
+            { ok: false, acknowledged: false, error: retryableError },
+            { ok: true, acknowledged: true }
+          ]]
+        ]);
+
+        const result = await retryClient.sendCoa({
+          username: 'alice',
+          sessionId
+        });
+
+        const userCalls = coaCalls.filter((call) => call.request.sessionId === sessionId);
+
+        expect(result.ok).toBe(true);
+        expect(result.acknowledged).toBe(true);
+        expect(userCalls).toHaveLength(2);
+        expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.1']);
+      } finally {
+        retryClient.shutdown();
+      }
+    });
+  }
 
   test('sendCoa retries keep default per-attempt identity behavior when no identity mode is configured', async () => {
     const retryClient = new RadiusClient({
@@ -1386,6 +1544,50 @@ describe('RadiusClient Failover', () => {
 
     retryClient.shutdown();
   });
+
+  for (const retryableError of ['malformed_response', 'identifier_mismatch', 'authenticator_mismatch', 'unknown_code'] as const) {
+    test(`sendDisconnect retries ${retryableError} failures when attempts remain`, async () => {
+      const retryClient = new RadiusClient({
+        ...config,
+        hosts: ['10.0.0.1'],
+        healthCheckIntervalMs: 60000,
+        retry: {
+          maxAttempts: 2,
+          initialDelayMs: 0,
+          backoffMultiplier: 1,
+          maxDelayMs: 0,
+          jitterRatio: 0
+        }
+      }, undefined, { protocol: protocolMock });
+
+      try {
+        const sessionId = `disconnect-retry-${retryableError}`;
+
+        responsiveDisconnectHosts = new Set(['10.0.0.1']);
+        disconnectCalls = [];
+        disconnectResponseBySessionId = new Map([
+          [sessionId, [
+            { ok: false, acknowledged: false, error: retryableError },
+            { ok: true, acknowledged: true }
+          ]]
+        ]);
+
+        const result = await retryClient.sendDisconnect({
+          username: 'alice',
+          sessionId
+        });
+
+        const userCalls = disconnectCalls.filter((call) => call.request.sessionId === sessionId);
+
+        expect(result.ok).toBe(true);
+        expect(result.acknowledged).toBe(true);
+        expect(userCalls).toHaveLength(2);
+        expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.1']);
+      } finally {
+        retryClient.shutdown();
+      }
+    });
+  }
 
   test('sendDisconnect retries reuse the same transaction identity across failover when stable identity mode is enabled', async () => {
     const retryClient = new RadiusClient({
@@ -1641,6 +1843,50 @@ describe('RadiusClient Failover', () => {
     retryClient.shutdown();
   });
 
+  for (const retryableError of ['malformed_response', 'identifier_mismatch', 'authenticator_mismatch', 'unknown_code'] as const) {
+    test(`sendAccounting retries ${retryableError} failures when attempts remain`, async () => {
+      const retryClient = new RadiusClient({
+        ...config,
+        hosts: ['10.0.0.1'],
+        healthCheckIntervalMs: 60000,
+        retry: {
+          maxAttempts: 2,
+          initialDelayMs: 0,
+          backoffMultiplier: 1,
+          maxDelayMs: 0,
+          jitterRatio: 0
+        }
+      }, undefined, { protocol: protocolMock });
+
+      try {
+        const sessionId = `accounting-retry-${retryableError}`;
+
+        responsiveAccountingHosts = new Set(['10.0.0.1']);
+        accountingCalls = [];
+        accountingResponseBySessionId = new Map([
+          [sessionId, [
+            { ok: false, error: retryableError },
+            { ok: true }
+          ]]
+        ]);
+
+        const result = await retryClient.sendAccounting({
+          username: 'alice',
+          sessionId,
+          statusType: 'Interim-Update'
+        });
+
+        const userCalls = accountingCalls.filter((call) => call.request.sessionId === sessionId);
+
+        expect(result.ok).toBe(true);
+        expect(userCalls).toHaveLength(2);
+        expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.1']);
+      } finally {
+        retryClient.shutdown();
+      }
+    });
+  }
+
   test('sendAccounting invokes timeout handling only after final timeout attempt', async () => {
     const retryClient = new RadiusClient({
       ...config,
@@ -1744,6 +1990,41 @@ describe('RadiusClient Failover', () => {
     }
 
     expect(Object.prototype.hasOwnProperty.call(accountingProbeCall.options, 'validateResponseSource')).toBe(false);
+
+    probeClient.shutdown();
+  });
+
+  test('accounting timeout probe omits responseLengthValidationPolicy forwarding and keeps strict defaults', async () => {
+    const probeClient = new RadiusClient({
+      ...config,
+      healthCheckIntervalMs: 60000,
+      responseLengthValidationPolicy: 'allow_trailing_bytes'
+    }, undefined, { protocol: protocolMock });
+
+    const internals = probeClient as unknown as {
+      activeHost: string | null;
+      onAccountingTimeout: (request: RadiusAccountingRequest) => Promise<void>;
+    };
+
+    internals.activeHost = '10.0.0.1';
+
+    responsiveAccountingHosts = new Set(['10.0.0.1']);
+    accountingCalls = [];
+
+    await internals.onAccountingTimeout({
+      username: 'alice',
+      sessionId: 'accounting-timeout-length-policy-omission',
+      statusType: 'Interim-Update'
+    });
+
+    const accountingProbeCall = accountingCalls.find((call) => call.request.username === config.healthCheckUser);
+    expect(accountingProbeCall).toBeDefined();
+
+    if (!accountingProbeCall) {
+      throw new Error('Expected accounting timeout probe call to validate response length policy forwarding semantics');
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(accountingProbeCall.options, 'responseLengthValidationPolicy')).toBe(false);
 
     probeClient.shutdown();
   });
