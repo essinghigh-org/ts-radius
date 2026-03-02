@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 
 import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from "./protocol";
 import {
+  type RadiusAccountingOnOffRequest,
   type RadiusAccountingRequest,
   type RadiusAccountingRequestBase,
   type RadiusCoaRequest,
@@ -350,6 +351,14 @@ export class RadiusClient {
 
   public accountingStop(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
     return this.sendAccounting({ ...request, statusType: "Stop" });
+  }
+
+  public accountingOn(request: RadiusAccountingOnOffRequest = {}): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Accounting-On" });
+  }
+
+  public accountingOff(request: RadiusAccountingOnOffRequest = {}): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Accounting-Off" });
   }
 
   private async sendDynamicAuthorizationRequest(

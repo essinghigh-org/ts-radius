@@ -111,7 +111,9 @@ const protocolMock = {
   ): Promise<RadiusResult> => {
     accountingCalls.push({ host, request, options, logger });
 
-    const scriptedResponses = accountingResponseBySessionId.get(request.sessionId);
+    const scriptedResponses = request.sessionId
+      ? accountingResponseBySessionId.get(request.sessionId)
+      : undefined;
     if (scriptedResponses && scriptedResponses.length > 0) {
       const scriptedResponse = scriptedResponses.shift();
       if (scriptedResponse) {
@@ -1317,7 +1319,7 @@ describe('RadiusClient Failover', () => {
     retryClient.shutdown();
   });
 
-  test('accountingStart/accountingInterim/accountingStop send typed status values', async () => {
+  test('accounting helper methods map to expected typed status values including On/Off', async () => {
     await client.accountingStart({
       username: 'alice',
       sessionId: 'session-1'
@@ -1338,13 +1340,28 @@ describe('RadiusClient Failover', () => {
       terminateCause: 1
     });
 
-    expect(accountingCalls).toHaveLength(3);
+    await client.accountingOn({
+      delayTime: 5
+    });
 
-    const [startCall, interimCall, stopCall] = accountingCalls;
+    await client.accountingOff({
+      attributes: [{ type: 87, value: 'nas-down' }]
+    });
+
+    expect(accountingCalls).toHaveLength(5);
+
+    const [startCall, interimCall, stopCall, onCall, offCall] = accountingCalls;
 
     expect(startCall?.request.statusType).toBe('Start');
     expect(interimCall?.request.statusType).toBe('Interim-Update');
     expect(stopCall?.request.statusType).toBe('Stop');
+    expect(onCall?.request.statusType).toBe('Accounting-On');
+    expect(offCall?.request.statusType).toBe('Accounting-Off');
+
+    expect(onCall?.request.username).toBeUndefined();
+    expect(onCall?.request.sessionId).toBeUndefined();
+    expect(offCall?.request.username).toBeUndefined();
+    expect(offCall?.request.sessionId).toBeUndefined();
 
     expect(startCall?.options).toMatchObject({
       secret: 'secret',
@@ -1402,7 +1419,8 @@ describe('RadiusClient Failover', () => {
 
       const accountingProbeSessionIds = accountingCalls
         .filter((call) => call.request.username === config.healthCheckUser)
-        .map((call) => call.request.sessionId);
+        .map((call) => call.request.sessionId)
+        .filter((sessionId): sessionId is string => typeof sessionId === 'string');
 
       expect(accountingProbeSessionIds.length).toBeGreaterThanOrEqual(2);
       expect(accountingProbeSessionIds.every((sessionId) => sessionId.startsWith('health-'))).toBe(true);
