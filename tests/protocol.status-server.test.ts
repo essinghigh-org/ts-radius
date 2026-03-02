@@ -138,6 +138,19 @@ describe("radiusStatusServerProbe hardening", () => {
     expect(result.error).toBe("timeout");
   });
 
+  test("returns ok for valid Status-Server response attributes", async () => {
+    const result = await runStatusProbeScenario({
+      responseBuilder: (requestPacket) =>
+        buildStatusServerResponsePacket({
+          requestPacket,
+          attributes: [Buffer.from([18, 4, 0x6f, 0x6b])],
+        }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
   test("returns malformed_response when Status-Server response declared length exceeds datagram length", async () => {
     const result = await runStatusProbeScenario({
       responseBuilder: (requestPacket) => {
@@ -157,6 +170,32 @@ describe("radiusStatusServerProbe hardening", () => {
         buildStatusServerResponsePacket({
           requestPacket,
           attributes: buildOversizedResponseAttributes(),
+        }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("malformed_response");
+  });
+
+  test("returns malformed_response when Status-Server response has attribute length less than 2", async () => {
+    const result = await runStatusProbeScenario({
+      responseBuilder: (requestPacket) =>
+        buildStatusServerResponsePacket({
+          requestPacket,
+          attributes: [Buffer.from([18, 1])],
+        }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("malformed_response");
+  });
+
+  test("returns malformed_response when Status-Server response attribute overruns packet boundary", async () => {
+    const result = await runStatusProbeScenario({
+      responseBuilder: (requestPacket) =>
+        buildStatusServerResponsePacket({
+          requestPacket,
+          attributes: [Buffer.from([18, 5, 0x61])],
         }),
     });
 

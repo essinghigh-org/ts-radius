@@ -1665,6 +1665,12 @@ export async function radiusStatusServerProbe(
         return;
       }
 
+      const parsedAttributesResult = parseAttributes(response, logger);
+      if ("error" in parsedAttributesResult) {
+        resolve({ ok: false, raw: response.toString("hex"), error: parsedAttributesResult.error });
+        return;
+      }
+
       const code = response.readUInt8(0);
       // Valid response packet codes indicate server liveness.
       if (code === 2 || code === 3 || code === 5 || code === 11) {
