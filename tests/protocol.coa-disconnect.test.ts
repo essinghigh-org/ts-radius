@@ -7,6 +7,9 @@ import { radiusCoa, radiusDisconnect } from "../src/protocol";
 import type { RadiusCoaRequest, RadiusDisconnectRequest } from "../src/types";
 
 type DynamicAuthorizationResponseCode = number;
+const MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE = 80;
+const MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH = 18;
+const EVENT_TIMESTAMP_ATTRIBUTE_TYPE = 55;
 
 function encodeStringAttribute(type: number, value: string): Buffer {
   const encodedValue = Buffer.from(value, "utf8");
@@ -88,6 +91,69 @@ function buildDynamicAuthorizationResponse(
   return response;
 }
 
+function computeAccountingStyleRequestAuthenticator(requestPacket: Buffer, secret: string): Buffer {
+  const packetForDigest = Buffer.from(requestPacket);
+  packetForDigest.fill(0, 4, 20);
+
+  return crypto
+    .createHash("md5")
+    .update(Buffer.concat([packetForDigest, Buffer.from(secret, "utf8")]))
+    .digest();
+}
+
+function buildDynamicAuthorizationResponseWithMessageAuthenticator(
+  requestPacket: Buffer,
+  secret: string,
+  responseCode: DynamicAuthorizationResponseCode,
+  messageAuthenticatorMode: "valid" | "invalid",
+  attributes: Buffer[] = []
+): Buffer {
+  const requestAuthenticator = requestPacket.subarray(4, 20);
+  const attributesWithMessageAuthenticator = [
+    ...attributes,
+    Buffer.concat([Buffer.from([MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE, MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH]), Buffer.alloc(16, 0)])
+  ];
+
+  const response = buildDynamicAuthorizationResponse(
+    requestPacket,
+    secret,
+    responseCode,
+    attributesWithMessageAuthenticator
+  );
+
+  const messageAuthenticatorOffset = response.length - MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH;
+  const verificationPacket = Buffer.from(response);
+  verificationPacket.fill(0, messageAuthenticatorOffset + 2, messageAuthenticatorOffset + MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH);
+  requestAuthenticator.copy(verificationPacket, 4, 0, 16);
+
+  const computedMessageAuthenticator = crypto
+    .createHmac("md5", Buffer.from(secret, "utf8"))
+    .update(verificationPacket)
+    .digest();
+
+  if (messageAuthenticatorMode === "invalid") {
+    computedMessageAuthenticator.writeUInt8(
+      computedMessageAuthenticator.readUInt8(0) ^ 0xff,
+      0
+    );
+  }
+
+  computedMessageAuthenticator.copy(response, messageAuthenticatorOffset + 2, 0, 16);
+
+  const responseAuthenticatorInput = Buffer.concat([
+    Buffer.from([response.readUInt8(0)]),
+    Buffer.from([response.readUInt8(1)]),
+    response.subarray(2, 4),
+    requestAuthenticator,
+    response.subarray(20),
+    Buffer.from(secret, "utf8")
+  ]);
+
+  crypto.createHash("md5").update(responseAuthenticatorInput).digest().copy(response, 4);
+
+  return response;
+}
+
 function appendTrailingBytes(packet: Buffer): Buffer {
   return Buffer.concat([packet, Buffer.from([0xde, 0xad, 0xbe, 0xef])]);
 }
@@ -162,6 +228,9 @@ describe("CoA/Disconnect protocol", () => {
 
       expect(requestPacket.readUInt8(0)).toBe(43);
       expect(requestPacket.subarray(4, 20).equals(Buffer.alloc(16, 0))).toBe(false);
+
+      const expectedAuthenticator = computeAccountingStyleRequestAuthenticator(requestPacket, sharedSecret);
+      expect(requestPacket.subarray(4, 20).equals(expectedAuthenticator)).toBe(true);
 
       const attributes = parseAttributes(requestPacket);
       expect(readStringAttribute(attributes, 1)).toBe("alice");
@@ -405,6 +474,9 @@ describe("CoA/Disconnect protocol", () => {
       }
 
       expect(requestPacket.readUInt8(0)).toBe(40);
+      const expectedAuthenticator = computeAccountingStyleRequestAuthenticator(requestPacket, sharedSecret);
+      expect(requestPacket.subarray(4, 20).equals(expectedAuthenticator)).toBe(true);
+
       const attributes = parseAttributes(requestPacket);
       expect(readStringAttribute(attributes, 1)).toBe("alice");
       expect(readStringAttribute(attributes, 44)).toBe("session-003");
@@ -619,6 +691,142 @@ describe("CoA/Disconnect protocol", () => {
       expect(result.ok).toBe(false);
       expect(result.acknowledged).toBe(false);
       expect(result.error).toBe("authenticator_mismatch");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects CoA responses with invalid Message-Authenticator when present", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponseWithMessageAuthenticator(
+        msg,
+        sharedSecret,
+        44,
+        "invalid",
+      );
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-invalid-message-authenticator"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("accepts CoA responses with valid Message-Authenticator when present", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = buildDynamicAuthorizationResponseWithMessageAuthenticator(
+        msg,
+        sharedSecret,
+        44,
+        "valid",
+        [encodeStringAttribute(18, "ma-valid")]
+      );
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-valid-message-authenticator"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.acknowledged).toBe(true);
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects stale Event-Timestamp in CoA responses by default", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const oneHourAgoSeconds = Math.floor(Date.now() / 1000) - 3600;
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44, [
+        encodeIntegerAttribute(EVENT_TIMESTAMP_ATTRIBUTE_TYPE, oneHourAgoSeconds)
+      ]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-stale-event-timestamp"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("accepts older Event-Timestamp in CoA responses when freshness window is widened", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const oneHourAgoSeconds = Math.floor(Date.now() / 1000) - 3600;
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44, [
+        encodeIntegerAttribute(EVENT_TIMESTAMP_ATTRIBUTE_TYPE, oneHourAgoSeconds)
+      ]);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-stale-event-timestamp-allowed"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          dynamicAuthorizationEventTimestampWindowSeconds: 7200,
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.acknowledged).toBe(true);
     } finally {
       await closeSocket(server);
     }

@@ -105,8 +105,12 @@ export type RadiusDisconnectRequest = RadiusDynamicAuthorizationRequestBase;
 export interface RadiusDynamicAuthorizationRequestIdentity {
   /** RFC5176 packet Identifier (1 octet). */
   identifier: number;
-  /** RFC5176 packet Request Authenticator (16 octets). */
-  requestAuthenticator: Buffer;
+  /**
+   * Optional RFC5176 packet Request Authenticator (16 octets) override.
+   * When omitted, the protocol layer computes the accounting-style
+   * Request Authenticator per RFC2866/RFC5176.
+   */
+  requestAuthenticator?: Buffer;
 }
 
 export interface RadiusAccountingRequestIdentity {
@@ -183,15 +187,26 @@ export interface RadiusProtocolOptions {
   accountingRequestIdentity?: RadiusAccountingRequestIdentity;
   /**
    * Optional request identity override for CoA/Disconnect packets.
-   * When provided, both identifier and request authenticator are used verbatim.
+    * `identifier` is always used verbatim.
+    * `requestAuthenticator`, when provided, is used verbatim and must be 16 bytes.
+    * If omitted, the protocol layer computes the accounting-style Request
+    * Authenticator for the packet.
    */
   dynamicAuthorizationRequestIdentity?: RadiusDynamicAuthorizationRequestIdentity;
   /**
-   * How to handle a present response Message-Authenticator (Type 80).
+    * Access-response Message-Authenticator policy (authentication and auth-probe path).
    * - compatibility (default): warn on invalid value and continue.
    * - strict: reject malformed/invalid values.
+    * Dynamic authorization responses always reject invalid *present*
+    * Message-Authenticator values regardless of this policy.
    */
   responseMessageAuthenticatorPolicy?: ResponseMessageAuthenticatorPolicy;
+  /**
+   * Max absolute skew in seconds allowed for Event-Timestamp (Type 55)
+   * in dynamic authorization responses when present.
+   * Default: 300 seconds.
+   */
+  dynamicAuthorizationEventTimestampWindowSeconds?: number;
   /**
    * How response length mismatches are handled.
    * - strict (default for access-auth/status/dynamic-authorization):
@@ -291,8 +306,11 @@ export interface RadiusConfig extends RadiusProtocolOptions {
   retry?: RadiusRetryOptions;
   /**
    * Controls CoA/Disconnect retry identity behavior.
-   * - per_attempt (default): each retry attempt uses a new packet identifier/authenticator.
-   * - stable: reuse one packet identifier/authenticator for all retries in a single logical send call.
+   * - per_attempt (default): each retry attempt uses a new packet identifier,
+   *   producing a new computed accounting-style Request Authenticator.
+   * - stable: retries to the same host reuse one identifier;
+   *   failover to a different host uses a new identifier.
+   *   Request Authenticator is still computed by the protocol layer per packet.
    */
   dynamicAuthorizationRetryIdentityMode?: DynamicAuthorizationRetryIdentityMode;
 }
