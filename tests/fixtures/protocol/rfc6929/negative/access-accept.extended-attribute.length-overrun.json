@@ -1,0 +1,13 @@
+{
+  "name": "rfc6929-access-accept-extended-attribute-length-overrun",
+  "rfc": "RFC6929",
+  "description": "Malformed Access-Accept with an extended attribute whose declared length overruns the packet boundary.",
+  "packetHex": "02 02 00 19 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f1 07 01 de ad",
+  "expected": {
+    "code": 2,
+    "identifier": 2,
+    "length": 25,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": []
+  }
+}

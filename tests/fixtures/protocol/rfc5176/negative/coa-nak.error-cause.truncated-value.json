@@ -1,0 +1,13 @@
+{
+  "name": "rfc5176-coa-nak-error-cause-truncated-value",
+  "rfc": "RFC5176",
+  "description": "Malformed CoA-NAK packet where Error-Cause declares a 4-byte integer but only 3 bytes are present.",
+  "packetHex": "2d 02 00 19 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 06 00 00 01",
+  "expected": {
+    "code": 45,
+    "identifier": 2,
+    "length": 25,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": []
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "rfc2869-access-request-attribute-length-zero",
+  "rfc": "RFC2869",
+  "description": "Malformed Access-Request where attribute length is zero, which violates RFC2865 section 5 framing rules.",
+  "packetHex": "01 11 00 16 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 50 00",
+  "expected": {
+    "code": 1,
+    "identifier": 17,
+    "length": 22,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": []
+  }
+}
