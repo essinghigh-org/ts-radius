@@ -1,0 +1,20 @@
+{
+  "name": "rfc2869-access-request-eap-message",
+  "rfc": "RFC2869",
+  "description": "Access-Request packet carrying a deterministic EAP-Message attribute.",
+  "packetHex": "01 10 00 21 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 4f 0d 65 61 70 2d 70 61 79 6c 6f 61 64",
+  "expected": {
+    "code": 1,
+    "identifier": 16,
+    "length": 33,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 79,
+        "name": "EAP-Message",
+        "rawHex": "6561702d7061796c6f6164",
+        "decodedValue": "eap-payload"
+      }
+    ]
+  }
+}

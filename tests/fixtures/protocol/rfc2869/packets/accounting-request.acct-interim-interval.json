@@ -1,0 +1,20 @@
+{
+  "name": "rfc2869-accounting-request-acct-interim-interval",
+  "rfc": "RFC2869",
+  "description": "Accounting-Request packet with a deterministic Acct-Interim-Interval value.",
+  "packetHex": "04 20 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 55 06 00 00 02 58",
+  "expected": {
+    "code": 4,
+    "identifier": 32,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 85,
+        "name": "Acct-Interim-Interval",
+        "rawHex": "00000258",
+        "decodedValue": 600
+      }
+    ]
+  }
+}
