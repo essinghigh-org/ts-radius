@@ -1,0 +1,20 @@
+{
+  "name": "disconnect-nak-error-cause-administratively-prohibited",
+  "rfc": "RFC5176",
+  "description": "Disconnect-NAK packet carrying Error-Cause 501 (Administratively Prohibited).",
+  "packetHex": "2a 02 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 06 00 00 01 f5",
+  "expected": {
+    "code": 42,
+    "identifier": 2,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 101,
+        "name": "Error-Cause",
+        "rawHex": "000001f5",
+        "decodedValue": 501
+      }
+    ]
+  }
+}

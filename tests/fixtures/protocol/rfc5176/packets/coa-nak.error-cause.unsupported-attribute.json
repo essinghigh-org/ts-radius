@@ -1,0 +1,20 @@
+{
+  "name": "coa-nak-error-cause-unsupported-attribute",
+  "rfc": "RFC5176",
+  "description": "CoA-NAK packet carrying Error-Cause 401 (Unsupported Attribute).",
+  "packetHex": "2d 02 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 06 00 00 01 91",
+  "expected": {
+    "code": 45,
+    "identifier": 2,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 101,
+        "name": "Error-Cause",
+        "rawHex": "00000191",
+        "decodedValue": 401
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "coa-nak-error-cause-resources-unavailable",
+  "rfc": "RFC5176",
+  "description": "CoA-NAK packet carrying Error-Cause 506 (Resources Unavailable).",
+  "packetHex": "2d 03 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 06 00 00 01 fa",
+  "expected": {
+    "code": 45,
+    "identifier": 3,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 101,
+        "name": "Error-Cause",
+        "rawHex": "000001fa",
+        "decodedValue": 506
+      }
+    ]
+  }
+}

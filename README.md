@@ -110,13 +110,43 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `healthCheckTimeoutMs` | `number` | `5000` | Timeout for health-check probe requests. |
 | `healthCheckUser` | `string` | (Required) | Username for health probes. |
 | `healthCheckPassword` | `string` | (Required) | Password for health probes. |
-| `retry` | `object` | `{ maxAttempts: 1 }` | Retry policy for transport failures during `authenticate`. |
-| `retry.maxAttempts` | `number` | `1` | Total auth attempts per call, including the first. |
+| `retry` | `object` | `{ maxAttempts: 1 }` | Retry policy for transport failures during `authenticate` and accounting operations. |
+| `retry.maxAttempts` | `number` | `1` | Total attempts per call for `authenticate` and accounting operations, including the first. |
 | `retry.initialDelayMs` | `number` | `100` | Base delay before the first retry attempt (milliseconds). |
 | `retry.backoffMultiplier` | `number` | `2` | Exponential multiplier for retry delays. |
 | `retry.maxDelayMs` | `number` | `5000` | Maximum delay cap for retries (milliseconds). |
 | `retry.jitterRatio` | `number` | `0` | Symmetric jitter ratio in range `[0,1]` (e.g. `0.5` = ±50%). |
 | `assignmentAttributeId` | `number` | `25` | Attribute ID to extract (e.g., 25 for Class). |
+| `vendorId` | `number` | `undefined` | Vendor-Id for VSA extraction when `assignmentAttributeId` is `26`. |
+| `vendorType` | `number` | `undefined` | Vendor-Type for VSA extraction when `assignmentAttributeId` is `26`. |
+| `valuePattern` | `string` | `undefined` | Optional regex used to extract a subgroup from the assignment attribute value. |
+| `validateResponseSource` | `boolean` | `true` | Validates response source host/port against request target host/port. |
+| `responseMessageAuthenticatorPolicy` | `'compatibility' \| 'strict'` | `'compatibility'` | Access-response Message-Authenticator handling (`strict` rejects invalid/missing values). |
+| `responseLengthValidationPolicy` | `'strict' \| 'allow_trailing_bytes'` | `'strict'` | Low-level response length policy; `allow_trailing_bytes` trims extra datagram bytes beyond declared RADIUS length. |
+
+## Advanced operation behavior
+
+### Retry policy scope
+
+- `retry.*` is applied to `authenticate`, `sendAccounting`, `accountingStart`, `accountingInterim`, and `accountingStop`.
+- Retries are triggered only for transport/protocol failures (`timeout`, `malformed_response`, `authenticator_mismatch`, `unknown_code`; plus `identifier_mismatch` for accounting).
+- `sendCoa` and `sendDisconnect` are single-attempt operations (no retry loop). Timeout still triggers health checks/failover logic.
+
+### Validation policy scope
+
+- `validateResponseSource` defaults to `true`, and response-source validation is enforced for all protocol operations.
+- `responseMessageAuthenticatorPolicy` applies to Access responses (authentication + auth health probes).
+  - `compatibility` warns on invalid Message-Authenticator and continues.
+  - `strict` rejects missing/invalid Message-Authenticator as `malformed_response`.
+- `responseLengthValidationPolicy` is available on low-level protocol functions:
+  - `strict`: declared RADIUS length must equal UDP datagram length.
+  - `allow_trailing_bytes`: accepts trailing bytes and parses only the declared packet length.
+
+### Assignment extraction knobs
+
+- `assignmentAttributeId` selects which attribute is extracted into `result.class`.
+- For Vendor-Specific extraction (`assignmentAttributeId: 26`), set both `vendorId` and `vendorType`.
+- `valuePattern` can return either capture group 1 (if present) or full regex match.
 
 ## License
 

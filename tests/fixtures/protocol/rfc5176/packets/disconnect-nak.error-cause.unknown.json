@@ -1,0 +1,20 @@
+{
+  "name": "disconnect-nak-error-cause-unknown",
+  "rfc": "RFC5176",
+  "description": "Disconnect-NAK packet carrying an unknown Error-Cause value (799).",
+  "packetHex": "2a 03 00 1a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 06 00 00 03 1f",
+  "expected": {
+    "code": 42,
+    "identifier": 3,
+    "length": 26,
+    "authenticatorHexPattern": "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "attributes": [
+      {
+        "id": 101,
+        "name": "Error-Cause",
+        "rawHex": "0000031f",
+        "decodedValue": 799
+      }
+    ]
+  }
+}
