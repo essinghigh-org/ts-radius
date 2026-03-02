@@ -1283,7 +1283,7 @@ describe('RadiusClient Failover', () => {
     probeClient.shutdown();
   });
 
-  test('dynamic-authorization timeout probes omit responseLengthValidationPolicy forwarding and keep strict defaults', async () => {
+  test('dynamic-authorization timeout probes omit responseLengthValidationPolicy forwarding and rely on protocol defaults', async () => {
     const probeClient = new RadiusClient({
       ...config,
       healthCheckIntervalMs: 60000,
