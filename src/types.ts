@@ -216,9 +216,9 @@ export interface RadiusProtocolOptions {
   dynamicAuthorizationEventTimestampWindowSeconds?: number;
   /**
    * How response length mismatches are handled.
-   * - strict (default for access-auth/status/dynamic-authorization):
+   * - strict (default for access-auth/status-server):
    *   declared packet length must equal UDP datagram length.
-   * - allow_trailing_bytes (default for accounting responses):
+   * - allow_trailing_bytes (default for accounting and dynamic-authorization responses):
    *   accept datagrams with extra trailing bytes and parse only declared length.
    */
   responseLengthValidationPolicy?: ResponseLengthValidationPolicy;

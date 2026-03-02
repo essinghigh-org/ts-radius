@@ -344,7 +344,8 @@ function getResponseLengthValidationPolicy(options: RadiusProtocolOptions): Resp
 function validateResponsePacket(
   response: Buffer,
   options: RadiusProtocolOptions,
-  logger?: Logger
+  logger?: Logger,
+  maxPacketLength?: number
 ): { packet: Buffer } | { error: "malformed_response" } {
   if (response.length < 20) {
     if (logger) logger.warn("[radius] received malformed response (too short)");
@@ -356,6 +357,17 @@ function validateResponsePacket(
     if (logger) {
       logger.warn("[radius] received malformed response (declared length below minimum)", {
         declaredLength,
+        actualLength: response.length
+      });
+    }
+    return { error: "malformed_response" };
+  }
+
+  if (maxPacketLength !== undefined && declaredLength > maxPacketLength) {
+    if (logger) {
+      logger.warn("[radius] received malformed response (declared length exceeds maximum)", {
+        declaredLength,
+        maxPacketLength,
         actualLength: response.length
       });
     }
@@ -1854,6 +1866,9 @@ async function sendDynamicAuthorization(
   const validateResponseSource = options.validateResponseSource !== false;
   const dynamicAuthorizationEventTimestampWindowSeconds =
     resolveDynamicAuthorizationEventTimestampWindowSeconds(options);
+  const responseValidationOptions: RadiusProtocolOptions = options.responseLengthValidationPolicy === undefined
+    ? { ...options, responseLengthValidationPolicy: "allow_trailing_bytes" }
+    : options;
 
   const attrs = buildDynamicAuthorizationAttributes(request);
   const attrBuf = Buffer.concat(attrs);
@@ -1880,6 +1895,7 @@ async function sendDynamicAuthorization(
 
   return new Promise((resolve, reject) => {
     const client = createSocketForHost(targetHost);
+    let settled = false;
 
     const header = Buffer.alloc(20);
     header.writeUInt8(codes.request, 0);
@@ -1895,9 +1911,23 @@ async function sendDynamicAuthorization(
           .digest();
     requestAuthenticator.copy(packet, 4);
 
+    const finalize = (result: RadiusDynamicAuthorizationResult): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      try {
+        client.close();
+      } catch {
+        // socket can already be closed if another terminal path completed first
+      }
+      resolve(result);
+    };
+
     const timer = setTimeout(() => {
-      client.close();
-      resolve({ ok: false, acknowledged: false, error: "timeout" });
+      finalize({ ok: false, acknowledged: false, error: "timeout" });
     }, timeoutMs);
 
     client.on("message", (msg, remoteInfo) => {
@@ -1917,19 +1947,21 @@ async function sendDynamicAuthorization(
         return;
       }
 
-      clearTimeout(timer);
-      client.close();
-
-      const packetValidation = validateResponsePacket(msg, options, logger);
+      const packetValidation = validateResponsePacket(
+        msg,
+        responseValidationOptions,
+        logger,
+        MAX_DYNAMIC_AUTHORIZATION_PACKET_LENGTH
+      );
       if ("error" in packetValidation) {
-        resolve({ ok: false, acknowledged: false, raw: msg.toString("hex"), error: packetValidation.error });
+        finalize({ ok: false, acknowledged: false, raw: msg.toString("hex"), error: packetValidation.error });
         return;
       }
 
       const response = packetValidation.packet;
 
       if (response.readUInt8(1) !== id) {
-        resolve({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "identifier_mismatch" });
+        finalize({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "identifier_mismatch" });
         return;
       }
 
@@ -1940,20 +1972,31 @@ async function sendDynamicAuthorization(
             reason: messageAuthenticatorValidation.reason,
           });
         }
-        resolve({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "malformed_response" });
+        finalize({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "malformed_response" });
         return;
       }
 
       if (!hasValidResponseAuthenticator(response, requestAuthenticator, secret)) {
         if (logger) logger.warn("[radius] dynamic authorization response authenticator mismatch; dropping response");
-        resolve({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "authenticator_mismatch" });
+        finalize({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "authenticator_mismatch" });
         return;
       }
 
       const code = response.readUInt8(0);
+      if (code !== codes.ack && code !== codes.nak) {
+        if (logger) {
+          logger.warn("[radius] received unexpected dynamic authorization response code; discarding", {
+            code,
+            expectedAck: codes.ack,
+            expectedNak: codes.nak,
+          });
+        }
+        return;
+      }
+
       const parsedAttributesResult = parseAttributes(response, logger);
       if ("error" in parsedAttributesResult) {
-        resolve({
+        finalize({
           ok: false,
           acknowledged: false,
           raw: response.toString("hex"),
@@ -1974,7 +2017,7 @@ async function sendDynamicAuthorization(
             maxSkewSeconds: dynamicAuthorizationEventTimestampWindowSeconds,
           });
         }
-        resolve({
+        finalize({
           ok: false,
           acknowledged: false,
           raw: response.toString("hex"),
@@ -1984,7 +2027,7 @@ async function sendDynamicAuthorization(
       }
 
       if (code === codes.ack) {
-        resolve({
+        finalize({
           ok: true,
           acknowledged: true,
           attributes: parsedAttributes,
@@ -1995,7 +2038,7 @@ async function sendDynamicAuthorization(
 
       if (code === codes.nak) {
         const errorCause = extractErrorCause(parsedAttributes);
-        resolve({
+        finalize({
           ok: false,
           acknowledged: false,
           attributes: parsedAttributes,
@@ -2006,17 +2049,14 @@ async function sendDynamicAuthorization(
         });
         return;
       }
-
-      resolve({
-        ok: false,
-        acknowledged: false,
-        attributes: parsedAttributes,
-        raw: response.toString("hex"),
-        error: "unknown_code"
-      });
     });
 
     client.on("error", (err) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
       clearTimeout(timer);
       try {
         client.close();
@@ -2029,8 +2069,17 @@ async function sendDynamicAuthorization(
     const sendPacket = (): void => {
       client.send(packet, port, targetHost, (err) => {
         if (err) {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
           clearTimeout(timer);
-          client.close();
+          try {
+            client.close();
+          } catch {
+            // no-op
+          }
           reject(err);
         }
       });

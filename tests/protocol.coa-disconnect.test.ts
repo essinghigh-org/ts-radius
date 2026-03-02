@@ -158,6 +158,12 @@ function appendTrailingBytes(packet: Buffer): Buffer {
   return Buffer.concat([packet, Buffer.from([0xde, 0xad, 0xbe, 0xef])]);
 }
 
+function buildOversizedResponseAttributes(): Buffer[] {
+  return Array.from({ length: 16 }, (_, index) =>
+    encodeStringAttribute((index % 255) + 1, "x".repeat(253))
+  );
+}
+
 function closeSocket(server: dgram.Socket): Promise<void> {
   return new Promise((resolve) => {
     server.close(() => {
@@ -965,37 +971,7 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
-  test("rejects CoA trailing bytes by default strict length policy", async () => {
-    const server = await bindServer();
-
-    server.on("message", (msg, rinfo) => {
-      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 44));
-      server.send(response, rinfo.port, rinfo.address);
-    });
-
-    try {
-      const result = await radiusCoa(
-        "127.0.0.1",
-        {
-          username: "alice",
-          sessionId: "session-coa-strict-trailing-bytes"
-        },
-        {
-          secret: sharedSecret,
-          port: getServerPort(server),
-          timeoutMs: 500
-        }
-      );
-
-      expect(result.ok).toBe(false);
-      expect(result.acknowledged).toBe(false);
-      expect(result.error).toBe("malformed_response");
-    } finally {
-      await closeSocket(server);
-    }
-  });
-
-  test("accepts CoA trailing bytes in allow_trailing_bytes mode", async () => {
+  test("accepts CoA trailing bytes by default for dynamic responses", async () => {
     const server = await bindServer();
 
     server.on("message", (msg, rinfo) => {
@@ -1010,13 +986,12 @@ describe("CoA/Disconnect protocol", () => {
         "127.0.0.1",
         {
           username: "alice",
-          sessionId: "session-coa-allow-trailing-bytes"
+          sessionId: "session-coa-default-trailing-bytes"
         },
         {
           secret: sharedSecret,
           port: getServerPort(server),
-          timeoutMs: 500,
-          responseLengthValidationPolicy: "allow_trailing_bytes"
+          timeoutMs: 500
         }
       );
 
@@ -1028,7 +1003,40 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
-  test("rejects Disconnect trailing bytes by default strict length policy", async () => {
+  test("rejects CoA trailing bytes when strict length policy is explicitly configured", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 44, [
+        encodeStringAttribute(18, "coerced")
+      ]));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-coa-explicit-strict-trailing-bytes"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "strict"
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("accepts Disconnect trailing bytes by default for dynamic responses", async () => {
     const server = await bindServer();
 
     server.on("message", (msg, rinfo) => {
@@ -1041,7 +1049,73 @@ describe("CoA/Disconnect protocol", () => {
         "127.0.0.1",
         {
           username: "alice",
-          sessionId: "session-disconnect-strict-trailing-bytes"
+          sessionId: "session-disconnect-default-trailing-bytes"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.acknowledged).toBe(true);
+      expect(result.error).toBeUndefined();
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects Disconnect trailing bytes when strict length policy is explicitly configured", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 41));
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusDisconnect(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-disconnect-explicit-strict-trailing-bytes"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          responseLengthValidationPolicy: "strict"
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("rejects inbound CoA responses above RFC5176 4096-byte maximum", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const oversizedResponse = buildDynamicAuthorizationResponse(
+        msg,
+        sharedSecret,
+        44,
+        buildOversizedResponseAttributes()
+      );
+      server.send(oversizedResponse, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-coa-oversized-response"
         },
         {
           secret: sharedSecret,
@@ -1058,12 +1132,17 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
-  test("accepts Disconnect trailing bytes in allow_trailing_bytes mode", async () => {
+  test("rejects inbound Disconnect responses above RFC5176 4096-byte maximum", async () => {
     const server = await bindServer();
 
     server.on("message", (msg, rinfo) => {
-      const response = appendTrailingBytes(buildDynamicAuthorizationResponse(msg, sharedSecret, 41));
-      server.send(response, rinfo.port, rinfo.address);
+      const oversizedResponse = buildDynamicAuthorizationResponse(
+        msg,
+        sharedSecret,
+        41,
+        buildOversizedResponseAttributes()
+      );
+      server.send(oversizedResponse, rinfo.port, rinfo.address);
     });
 
     try {
@@ -1071,24 +1150,24 @@ describe("CoA/Disconnect protocol", () => {
         "127.0.0.1",
         {
           username: "alice",
-          sessionId: "session-disconnect-allow-trailing-bytes"
+          sessionId: "session-disconnect-oversized-response"
         },
         {
           secret: sharedSecret,
           port: getServerPort(server),
-          timeoutMs: 500,
-          responseLengthValidationPolicy: "allow_trailing_bytes"
+          timeoutMs: 500
         }
       );
 
-      expect(result.ok).toBe(true);
-      expect(result.acknowledged).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("malformed_response");
     } finally {
       await closeSocket(server);
     }
   });
-  test("returns unknown_code for CoA responses with unexpected response code", async () => {
+
+  test("ignores unexpected CoA response code and times out if no valid response follows", async () => {
     const server = await bindServer();
 
     server.on("message", (msg, rinfo) => {
@@ -1103,7 +1182,46 @@ describe("CoA/Disconnect protocol", () => {
         "127.0.0.1",
         {
           username: "alice",
-          sessionId: "session-unknown-code"
+          sessionId: "session-unexpected-code-timeout"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 200
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.acknowledged).toBe(false);
+      expect(result.error).toBe("timeout");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
+  test("ignores unexpected CoA response code and accepts a later CoA-ACK", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const unexpectedResponse = buildDynamicAuthorizationResponse(msg, sharedSecret, 60, [
+        encodeStringAttribute(18, "unexpected")
+      ]);
+      const ackResponse = buildDynamicAuthorizationResponse(msg, sharedSecret, 44, [
+        encodeStringAttribute(18, "updated")
+      ]);
+
+      server.send(unexpectedResponse, rinfo.port, rinfo.address);
+      setTimeout(() => {
+        server.send(ackResponse, rinfo.port, rinfo.address);
+      }, 20);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-unexpected-code-then-ack"
         },
         {
           secret: sharedSecret,
@@ -1112,11 +1230,12 @@ describe("CoA/Disconnect protocol", () => {
         }
       );
 
-      expect(result.ok).toBe(false);
-      expect(result.acknowledged).toBe(false);
-      expect(result.error).toBe("unknown_code");
+      expect(result.ok).toBe(true);
+      expect(result.acknowledged).toBe(true);
+      expect(result.error).toBeUndefined();
     } finally {
       await closeSocket(server);
     }
   });
+
 });
