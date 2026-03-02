@@ -1,5 +1,12 @@
-import { radiusAuthenticate } from "./protocol";
-import { type RadiusConfig, type RadiusResult, type Logger, ConsoleLogger } from "./types";
+import { radiusAccounting, radiusAuthenticate } from "./protocol";
+import {
+  type RadiusAccountingRequest,
+  type RadiusAccountingRequestBase,
+  type RadiusConfig,
+  type RadiusResult,
+  type Logger,
+  ConsoleLogger
+} from "./types";
 
 interface HostHealth {
   host: string;
@@ -70,6 +77,57 @@ export class RadiusClient {
       this.logger.error('[radius-client] authenticate exception', { error: e });
       throw e;
     }
+  }
+
+  public async sendAccounting(request: RadiusAccountingRequest): Promise<RadiusResult> {
+    const host = this.getActiveHost();
+    const timeoutMs = this.config.timeoutMs || 5000;
+    const accountingPort = this.config.accountingPort || this.config.port || 1813;
+
+    this.logger.debug("[radius-client] accounting start", {
+      host,
+      statusType: request.statusType,
+      sessionId: request.sessionId
+    });
+
+    try {
+      const protocolOptions = {
+        secret: this.config.secret,
+        port: accountingPort,
+        accountingPort,
+        timeoutMs: timeoutMs
+      };
+
+      const result = await radiusAccounting(host, request, protocolOptions, this.logger);
+
+      if (!result.ok && result.error === "timeout") {
+        this.logger.warn("[radius-client] accounting timeout detected", {
+          host,
+          statusType: request.statusType,
+          sessionId: request.sessionId
+        });
+        this.onAuthTimeout().catch((error: unknown) => {
+          this.logger.warn("[radius-client] onAuthTimeout error", error);
+        });
+      }
+
+      return result;
+    } catch (e) {
+      this.logger.error("[radius-client] accounting exception", { error: e });
+      throw e;
+    }
+  }
+
+  public accountingStart(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Start" });
+  }
+
+  public accountingInterim(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Interim-Update" });
+  }
+
+  public accountingStop(request: RadiusAccountingRequestBase): Promise<RadiusResult> {
+    return this.sendAccounting({ ...request, statusType: "Stop" });
   }
 
   // --- Internal Failover / Health Logic ---

@@ -48,11 +48,36 @@ export interface RadiusResult {
 export interface RadiusProtocolOptions {
   secret: string;
   port?: number;
+  accountingPort?: number;
   timeoutMs?: number;
   assignmentAttributeId?: number;
   vendorId?: number;
   vendorType?: number;
   valuePattern?: string;
+}
+
+export type RadiusAccountingStatusType = 'Start' | 'Stop' | 'Interim-Update';
+
+export interface RadiusAccountingAttribute {
+  type: number;
+  value: string | number | Buffer;
+}
+
+export interface RadiusAccountingRequestBase {
+  username: string;
+  sessionId: string;
+  sessionTime?: number;
+  inputOctets?: number;
+  outputOctets?: number;
+  inputPackets?: number;
+  outputPackets?: number;
+  delayTime?: number;
+  terminateCause?: number;
+  attributes?: RadiusAccountingAttribute[];
+}
+
+export interface RadiusAccountingRequest extends RadiusAccountingRequestBase {
+  statusType: RadiusAccountingStatusType;
 }
 
 export interface RadiusConfig extends RadiusProtocolOptions {
