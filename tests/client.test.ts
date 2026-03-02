@@ -408,7 +408,7 @@ describe('RadiusClient Failover', () => {
         maxDelayMs: 1,
         jitterRatio: 0
       }
-    });
+    }, undefined, { protocol: protocolMock });
 
     responsiveHosts = new Set(['10.0.0.1', '10.0.0.2']);
     rejectingHosts = new Set(['10.0.0.1']);

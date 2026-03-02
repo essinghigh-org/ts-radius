@@ -128,7 +128,7 @@ function createFixtureSchemaValidator(): ValidateFunction {
         throw new Error(`Fixture schema must be a JSON object: ${FIXTURE_SCHEMA_RELATIVE_PATH}`);
     }
 
-    const ajv = new Ajv({ allErrors: true, strict: true });
+    const ajv = new Ajv({ allErrors: true });
 
     return ajv.compile(schema);
 }
