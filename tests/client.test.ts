@@ -936,7 +936,15 @@ describe('RadiusClient Failover', () => {
     const newHost = await statusClient.failover();
 
     expect(newHost).toBe('10.0.0.2');
-    expect(statusCalls.some((call) => call.host === '10.0.0.2')).toBe(true);
+
+    const statusProbeCall = statusCalls.find((call) => call.host === '10.0.0.2');
+    expect(statusProbeCall).toBeDefined();
+
+    if (!statusProbeCall) {
+      throw new Error('Expected status-server probe call to verify validateResponseSource forwarding');
+    }
+
+    expect(statusProbeCall.options.validateResponseSource).toBe(false);
 
     const fallbackAuthProbe = authCalls.find(
       (call) => call.host === '10.0.0.2' && call.username === config.healthCheckUser
