@@ -744,6 +744,47 @@ describe("Accounting protocol", () => {
     }
   });
 
+  test("returns malformed_response when Accounting-Response exceeds RFC maximum length of 4095 bytes", async () => {
+    const server = await bindServer();
+
+    server.on("message", (msg, rinfo) => {
+      const oversizedAttributes = Array.from({ length: 17 }, () =>
+        Buffer.concat([Buffer.from([18, 255]), Buffer.alloc(253, 0x61)])
+      );
+
+      const response = buildAccountingResponsePacket(
+        msg,
+        sharedSecret,
+        5,
+        false,
+        undefined,
+        oversizedAttributes
+      );
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusAccounting(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-oversized-response",
+          statusType: "Start"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500
+        }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("malformed_response");
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("returns malformed_response when Accounting-Response has attribute length below minimum", async () => {
     const server = await bindServer();
 
