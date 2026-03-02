@@ -55,15 +55,22 @@ try {
 ## Configuration (`RadiusConfig`)
 
 | Option | Type | Default | Description |
-|Prefix|---|---|---|
+|---|---|---|---|
 | `host` | `string` | (Required) | Primary RADIUS host IP/hostname. |
 | `hosts` | `string[]` | `[host]` | Ordered list of hosts for failover. |
 | `secret` | `string` | (Required) | Shared secret. |
 | `port` | `number` | `1812` | RADIUS port. |
 | `timeoutMs` | `number` | `5000` | Request timeout in milliseconds. |
 | `healthCheckIntervalMs` | `number` | `1800000` | (30m) Interval for background health checks. |
+| `healthCheckProbeMode` | `'auth' \| 'status-server'` | `'auth'` | Probe mode for health checks. `'status-server'` uses RFC5997-oriented probes and falls back to auth probes for compatibility. |
 | `healthCheckUser` | `string` | (Required) | Username for health probes. |
 | `healthCheckPassword` | `string` | (Required) | Password for health probes. |
+| `retry` | `object` | `{ maxAttempts: 1 }` | Retry policy for transport failures during `authenticate`. |
+| `retry.maxAttempts` | `number` | `1` | Total auth attempts per call, including the first. |
+| `retry.initialDelayMs` | `number` | `100` | Base delay before retry #1 (milliseconds). |
+| `retry.backoffMultiplier` | `number` | `2` | Exponential multiplier for retry delays. |
+| `retry.maxDelayMs` | `number` | `5000` | Maximum delay cap for retries (milliseconds). |
+| `retry.jitterRatio` | `number` | `0` | Symmetric jitter ratio in range `[0,1]` (e.g. `0.5` = ±50%). |
 | `assignmentAttributeId` | `number` | `25` | Attribute ID to extract (e.g., 25 for Class). |
 
 ## License

@@ -1,4 +1,4 @@
-import { radiusAuthenticate } from "./protocol";
+import { radiusAuthenticate, radiusStatusServerProbe } from "./protocol";
 import { type RadiusConfig, type RadiusResult, type Logger, ConsoleLogger } from "./types";
 
 interface HostHealth {
@@ -6,6 +6,14 @@ interface HostHealth {
   lastOkAt: number | null;
   lastTriedAt: number | null;
   consecutiveFailures: number;
+}
+
+interface RetryPolicy {
+  maxAttempts: number;
+  initialDelayMs: number;
+  backoffMultiplier: number;
+  maxDelayMs: number;
+  jitterRatio: number;
 }
 
 export class RadiusClient {
@@ -39,39 +47,128 @@ export class RadiusClient {
   }
 
   public async authenticate(username: string, password: string): Promise<RadiusResult> {
-    const host = this.getActiveHost();
     const timeoutMs = this.config.timeoutMs || 5000;
     const port = this.config.port || 1812;
+    const retryPolicy = this.getRetryPolicy();
+    const maxAttempts = Number.isFinite(retryPolicy.maxAttempts)
+      ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
+      : 1;
 
-    this.logger.debug('[radius-client] authenticate start', { host, user: username });
+    // Create a config object for the protocol layer
+    const protocolOptions = {
+      secret: this.config.secret,
+      port: port,
+      timeoutMs: timeoutMs,
+      assignmentAttributeId: this.config.assignmentAttributeId,
+      vendorId: this.config.vendorId,
+      vendorType: this.config.vendorType,
+      valuePattern: this.config.valuePattern,
+      validateResponseSource: this.config.validateResponseSource,
+      responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
+    };
 
-    try {
-      // Create a config object for the protocol layer
-      const protocolOptions = {
-        secret: this.config.secret,
-        port: port,
-        timeoutMs: timeoutMs,
-        assignmentAttributeId: this.config.assignmentAttributeId,
-        vendorId: this.config.vendorId,
-        vendorType: this.config.vendorType,
-        valuePattern: this.config.valuePattern,
-        validateResponseSource: this.config.validateResponseSource,
-        responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
-      };
+    let lastResult: RadiusResult = { ok: false, error: 'timeout' };
 
-      const result = await radiusAuthenticate(host, username, password, protocolOptions, this.logger);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const host = this.getActiveHost();
 
-      if (!result.ok && result.error === 'timeout') {
-        this.logger.warn('[radius-client] auth timeout detected', { host });
-        // Trigger failover check asynchronously
-        this.onAuthTimeout().catch((error: unknown) => { this.logger.warn('[radius-client] onAuthTimeout error', error); });
+      this.logger.debug('[radius-client] authenticate start', {
+        host,
+        user: username,
+        attempt,
+        maxAttempts
+      });
+
+      try {
+        const result = await radiusAuthenticate(host, username, password, protocolOptions, this.logger);
+        lastResult = result;
+
+        if (result.ok || !this.isRetryableAuthFailure(result) || attempt >= maxAttempts) {
+          if (!result.ok && result.error === 'timeout') {
+            this.logger.warn('[radius-client] auth timeout detected', { host, attempt, maxAttempts });
+            // Trigger failover check asynchronously to preserve legacy health behavior.
+            this.onAuthTimeout().catch((error: unknown) => { this.logger.warn('[radius-client] onAuthTimeout error', error); });
+          }
+
+          return result;
+        }
+
+        this.logger.warn('[radius-client] auth transport failure; trying in-call failover before retry', {
+          host,
+          attempt,
+          maxAttempts,
+          error: result.error
+        });
+        await this.failover();
+
+        const retryDelayMs = this.getRetryDelayMs(attempt, retryPolicy);
+        if (retryDelayMs > 0) {
+          this.logger.debug('[radius-client] waiting before retry', {
+            delayMs: retryDelayMs,
+            nextAttempt: attempt + 1,
+            maxAttempts
+          });
+          await Bun.sleep(retryDelayMs);
+        }
+      } catch (e) {
+        this.logger.error('[radius-client] authenticate exception', { error: e });
+        throw e;
       }
-
-      return result;
-    } catch (e) {
-      this.logger.error('[radius-client] authenticate exception', { error: e });
-      throw e;
     }
+
+    return lastResult;
+  }
+
+  private getRetryPolicy(): RetryPolicy {
+    const retry = this.config.retry;
+    const maxAttempts = Math.floor(this.getFiniteRetryNumber(retry?.maxAttempts, 1));
+    const initialDelayMs = this.getFiniteRetryNumber(retry?.initialDelayMs, 100);
+    const backoffMultiplier = this.getFiniteRetryNumber(retry?.backoffMultiplier, 2);
+    const maxDelayMs = this.getFiniteRetryNumber(retry?.maxDelayMs, 5000);
+    const jitterRatio = this.getFiniteRetryNumber(retry?.jitterRatio, 0);
+
+    return {
+      maxAttempts: Math.max(1, maxAttempts),
+      initialDelayMs: Math.max(0, initialDelayMs),
+      backoffMultiplier: Math.max(1, backoffMultiplier),
+      maxDelayMs: Math.max(0, maxDelayMs),
+      jitterRatio: Math.max(0, Math.min(1, jitterRatio))
+    };
+  }
+
+  private getFiniteRetryNumber(value: number | undefined, fallback: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fallback;
+    }
+
+    return value;
+  }
+
+  private getRetryDelayMs(attempt: number, retryPolicy: RetryPolicy): number {
+    const retryIndex = Math.max(0, attempt - 1);
+    const baseDelay = Math.min(
+      retryPolicy.maxDelayMs,
+      retryPolicy.initialDelayMs * (retryPolicy.backoffMultiplier ** retryIndex)
+    );
+    const jitterMultiplier = retryPolicy.jitterRatio > 0
+      ? 1 + ((Math.random() * 2 - 1) * retryPolicy.jitterRatio)
+      : 1;
+
+    const jitteredDelay = baseDelay * jitterMultiplier;
+    if (!Number.isFinite(jitteredDelay)) {
+      return retryPolicy.maxDelayMs;
+    }
+
+    return Math.min(retryPolicy.maxDelayMs, Math.max(0, Math.round(jitteredDelay)));
+  }
+
+  private isRetryableAuthFailure(result: RadiusResult): boolean {
+    if (result.ok) return false;
+
+    return result.error === 'timeout'
+      || result.error === 'malformed_response'
+      || result.error === 'authenticator_mismatch'
+      || result.error === 'unknown_code';
   }
 
   // --- Internal Failover / Health Logic ---
@@ -170,7 +267,23 @@ export class RadiusClient {
   }
 
   public async failover(): Promise<string | null> {
-    if (this.inProgress) return null;
+    let lockBusyAfterWait = this.inProgress;
+    if (lockBusyAfterWait) {
+      const deadline = Date.now() + 100;
+      while (Date.now() < deadline) {
+        await Bun.sleep(1);
+        lockBusyAfterWait = this.inProgress;
+        if (!lockBusyAfterWait) {
+          break;
+        }
+      }
+    }
+
+    if (lockBusyAfterWait) {
+      this.logger.debug('[radius-client] failover skipped while another health operation is still in progress');
+      return null;
+    }
+
     this.inProgress = true;
     try {
       // Try next hosts in order starting after current active
@@ -197,6 +310,7 @@ export class RadiusClient {
     const hcUser = this.config.healthCheckUser;
     const hcPass = this.config.healthCheckPassword;
     const timeoutMs = this.config.healthCheckTimeoutMs || 5000;
+    const probeMode = this.config.healthCheckProbeMode || 'auth';
 
     const existingEntry = this.health.get(host);
     const entry = existingEntry ?? {
@@ -211,8 +325,35 @@ export class RadiusClient {
     }
 
     entry.lastTriedAt = Date.now();
+
+    const markHealthy = (reason: string): boolean => {
+      entry.lastOkAt = Date.now();
+      entry.consecutiveFailures = 0;
+      this.logger.debug('[radius-client] probe success', { host, reason });
+      return true;
+    };
+
+    const markUnhealthy = (reason: string): boolean => {
+      entry.consecutiveFailures++;
+      this.logger.debug('[radius-client] probe failure', { host, reason });
+      return false;
+    };
+
+    const evaluateAuthProbeResponse = (res: RadiusResult): boolean => {
+      if (res.ok) {
+        return markHealthy('auth-access-accept');
+      }
+
+      if (res.error === 'timeout' || res.error === 'malformed_response' || res.error === 'authenticator_mismatch') {
+        return markUnhealthy(`auth-${res.error}`);
+      }
+
+      // Any valid auth response (e.g. Access-Reject) still proves liveness.
+      return markHealthy(`auth-${res.error || 'negative-response'}`);
+    };
+
     try {
-      this.logger.debug('[radius-client] probing host', { host });
+      this.logger.debug('[radius-client] probing host', { host, mode: probeMode });
       const port = this.config.port || 1812;
 
       const protocolOptions = {
@@ -223,34 +364,30 @@ export class RadiusClient {
         responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
       };
 
-      const res = await radiusAuthenticate(host, hcUser, hcPass, protocolOptions, this.logger);
+      if (probeMode === 'status-server') {
+        try {
+          const statusResult = await radiusStatusServerProbe(host, protocolOptions, this.logger);
+          if (statusResult.ok) {
+            return markHealthy('status-server');
+          }
 
-      // Any response (accept/reject) counts as alive. Timeout or malformed counts as dead.
-      if (res.ok) {
-         entry.lastOkAt = Date.now();
-         entry.consecutiveFailures = 0;
-         this.logger.debug('[radius-client] probe success', { host });
-         return true;
+          this.logger.debug('[radius-client] status-server probe non-healthy result; falling back to auth probe', {
+            host,
+            error: statusResult.error
+          });
+        } catch (e) {
+          this.logger.debug('[radius-client] status-server probe exception; falling back to auth probe', {
+            host,
+            error: (e as Error).message
+          });
+        }
       }
 
-      if (res.error === 'timeout' || res.error === 'malformed_response') {
-         entry.consecutiveFailures++;
-         this.logger.debug('[radius-client] probe failed (timeout/malformed)', { host });
-         return false;
-      }
-
-      // If we got here, it's a valid RADIUS response (likely Access-Reject), so the server is alive.
-      // We do NOT increment consecutiveFailures because the server responded.
-      // It failed authentication (expected with dummy creds), but the host is healthy.
-      entry.lastOkAt = Date.now();
-      entry.consecutiveFailures = 0;
-      this.logger.debug('[radius-client] probe negative response (server alive)', { host });
-      return true;
+      const authProbe = await radiusAuthenticate(host, hcUser, hcPass, protocolOptions, this.logger);
+      return evaluateAuthProbeResponse(authProbe);
 
     } catch (e) {
-      entry.consecutiveFailures++;
-      this.logger.debug('[radius-client] probe exception', { host, error: (e as Error).message });
-      return false;
+      return markUnhealthy(`exception:${(e as Error).message}`);
     }
   }
 

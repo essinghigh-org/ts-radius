@@ -80,6 +80,21 @@ export interface RadiusProtocolOptions {
   responseMessageAuthenticatorPolicy?: ResponseMessageAuthenticatorPolicy;
 }
 
+export interface RadiusRetryOptions {
+  /** Total auth attempts per call, including the first attempt (default: 1) */
+  maxAttempts?: number;
+  /** Base delay before retry #1 in milliseconds (default: 100) */
+  initialDelayMs?: number;
+  /** Exponential multiplier for subsequent retry delays (default: 2) */
+  backoffMultiplier?: number;
+  /** Maximum delay cap for retry sleeps in milliseconds (default: 5000) */
+  maxDelayMs?: number;
+  /** Symmetric jitter ratio in [0, 1], where 0.5 means ±50% (default: 0) */
+  jitterRatio?: number;
+}
+
+export type HealthCheckProbeMode = "auth" | "status-server";
+
 export interface RadiusConfig extends RadiusProtocolOptions {
   /** Primary RADIUS host */
   host: string;
@@ -89,8 +104,12 @@ export interface RadiusConfig extends RadiusProtocolOptions {
   healthCheckIntervalMs?: number;
   /** Health check timeout in milliseconds (default: 5000) */
   healthCheckTimeoutMs?: number;
+  /** Probe strategy for host health checks (default: "auth") */
+  healthCheckProbeMode?: HealthCheckProbeMode;
   /** User for health check probe (Required) */
   healthCheckUser: string;
   /** Password for health check probe (Required) */
   healthCheckPassword: string;
+  /** Retry behavior for authenticate() transport-level failures */
+  retry?: RadiusRetryOptions;
 }

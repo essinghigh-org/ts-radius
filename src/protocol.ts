@@ -466,3 +466,129 @@ export async function radiusAuthenticate(
     });
   });
 }
+
+// RFC5997-oriented Status-Server health probe.
+// A valid response indicates the server is alive; callers can decide fallback behavior.
+export async function radiusStatusServerProbe(
+  host: string,
+  options: RadiusProtocolOptions,
+  logger?: Logger
+): Promise<RadiusResult> {
+  const secret = options.secret;
+  if (!secret) {
+    throw new Error('RADIUS secret is required and cannot be empty');
+  }
+
+  const port = options.port || 1812;
+  const timeoutMs = options.timeoutMs || 5000;
+
+  if (logger) logger.debug('[radius] status-server probe start', { host });
+
+  return new Promise((resolve, reject) => {
+    const client = dgram.createSocket("udp4");
+    const id = crypto.randomBytes(1).readUInt8(0);
+    const authenticator = crypto.randomBytes(16);
+
+    const attrs: Buffer[] = [];
+    // NAS-IP-Address (type 4) - optional, set to 127.0.0.1
+    attrs.push(Buffer.concat([Buffer.from([4, 6]), Buffer.from([127, 0, 0, 1])]));
+    // NAS-Port (type 5) - set to zero by default
+    attrs.push(Buffer.concat([Buffer.from([5, 6]), Buffer.from([0, 0, 0, 0])]));
+    // Message-Authenticator (type 80) - placeholder 16 bytes
+    attrs.push(Buffer.concat([Buffer.from([80, 18]), Buffer.alloc(16, 0)]));
+
+    const attrBuf = Buffer.concat(attrs);
+    const len = 20 + attrBuf.length;
+    const header = Buffer.alloc(20);
+    header.writeUInt8(12, 0); // Status-Server
+    header.writeUInt8(id, 1);
+    header.writeUInt16BE(len, 2);
+    authenticator.copy(header, 4);
+
+    const packet = Buffer.concat([header, attrBuf]);
+
+    // Compute Message-Authenticator (HMAC-MD5) if present.
+    try {
+      const hmac = crypto.createHmac('md5', Buffer.from(secret, 'utf8')).update(packet).digest();
+      let attrOff = 20;
+      while (attrOff + 2 <= packet.length) {
+        const t = packet.readUInt8(attrOff);
+        const l = packet.readUInt8(attrOff + 1);
+        if (t === 80 && l === 18) {
+          for (let i = 0; i < 16; i++) packet.writeUInt8(hmac.readUInt8(i), attrOff + 2 + i);
+          break;
+        }
+        if (l < 2) break;
+        attrOff += l;
+      }
+    } catch {
+      // ignore hmac failures; some servers don't require Message-Authenticator
+    }
+
+    const timer = setTimeout(() => {
+      client.close();
+      resolve({ ok: false, error: 'timeout' });
+    }, timeoutMs);
+
+    client.on("message", (msg) => {
+      clearTimeout(timer);
+      client.close();
+
+      if (msg.length < 20) {
+        if (logger) logger.warn('[radius] status-server malformed response (too short)');
+        resolve({ ok: false, raw: msg.toString("hex"), error: 'malformed_response' });
+        return;
+      }
+
+      try {
+        const respAuth = msg.subarray(4, 20);
+        const lenBuf = Buffer.alloc(2);
+        lenBuf.writeUInt16BE(msg.length, 0);
+        const toHash = Buffer.concat([
+          Buffer.from([msg.readUInt8(0)]),
+          Buffer.from([msg.readUInt8(1)]),
+          lenBuf,
+          authenticator,
+          msg.subarray(20),
+          Buffer.from(secret, "utf8"),
+        ]);
+
+        const expected = crypto.createHash("md5").update(toHash).digest();
+        if (!expected.equals(respAuth)) {
+          if (logger) logger.warn('[radius] status-server authenticator mismatch; dropping response');
+          resolve({ ok: false, raw: msg.toString("hex"), error: 'authenticator_mismatch' });
+          return;
+        }
+      } catch (e) {
+        if (logger) logger.warn('[radius] status-server authenticator verification error', e);
+      }
+
+      const code = msg.readUInt8(0);
+      // Valid response packet codes indicate server liveness.
+      if (code === 2 || code === 3 || code === 5 || code === 11) {
+        resolve({ ok: true, raw: msg.toString("hex") });
+        return;
+      }
+
+      resolve({ ok: false, raw: msg.toString("hex"), error: 'unknown_code' });
+    });
+
+    client.on("error", (err) => {
+      clearTimeout(timer);
+      try {
+        client.close();
+      } catch (closeError: unknown) {
+        if (logger) logger.debug('[radius] status-server socket close after error failed', closeError);
+      }
+      reject(err);
+    });
+
+    client.send(packet, port, host, (err) => {
+      if (err) {
+        clearTimeout(timer);
+        client.close();
+        reject(err);
+      }
+    });
+  });
+}
