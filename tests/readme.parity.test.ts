@@ -21,6 +21,34 @@ function getTopLevelSection(markdown: string, headingPattern: RegExp): string {
   return lines.slice(startIndex + 1, endIndex).join("\n");
 }
 
+function getHeadingSection(markdown: string, headingPattern: RegExp): string {
+  const lines = markdown.replaceAll("\r\n", "\n").split("\n");
+  const startIndex = lines.findIndex((line) => headingPattern.test(line.trim()));
+
+  expect(startIndex).toBeGreaterThanOrEqual(0);
+
+  const headingLine = lines[startIndex]?.trim() ?? "";
+  const headingMatch = headingLine.match(/^(#+)\s+/);
+
+  expect(headingMatch).not.toBeNull();
+
+  const headingHashes = headingMatch?.[1];
+  const headingLevel = headingHashes ? headingHashes.length : 1;
+  let endIndex = lines.length;
+
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const candidate = lines[i]?.trim() ?? "";
+    const candidateMatch = candidate.match(/^(#+)\s+/);
+    const candidateHashes = candidateMatch?.[1];
+    if (candidateHashes && candidateHashes.length <= headingLevel) {
+      endIndex = i;
+      break;
+    }
+  }
+
+  return lines.slice(startIndex + 1, endIndex).join("\n");
+}
+
 function getFirstMarkdownTableRows(sectionBody: string): string[] {
   const lines = sectionBody.split("\n").map((line) => line.trim());
 
@@ -69,6 +97,32 @@ describe("README docs parity", () => {
     ]) {
       expect(operationKey.test(dataRows)).toBe(true);
     }
+
+    const healthProbeRow = tableRows
+      .slice(2)
+      .find((row) => /health\s*probes?/i.test(row));
+
+    expect(healthProbeRow).toBeDefined();
+
+    const normalizedHealthProbeRow = (healthProbeRow ?? "").toLowerCase();
+    expect(normalizedHealthProbeRow).toContain("validateresponsesource");
+    expect(/auth/.test(normalizedHealthProbeRow)).toBe(true);
+    expect(/accounting|coa|disconnect/.test(normalizedHealthProbeRow)).toBe(true);
+
+    const validationNotes = getHeadingSection(
+      readme,
+      /^###\s+validation policy notes$/i
+    );
+    const normalizedValidationNotes = validationNotes.toLowerCase();
+
+    expect(normalizedValidationNotes).toContain("validateresponsesource");
+    expect(/auth[^\n]*probe/.test(normalizedValidationNotes)).toBe(true);
+    expect(/accounting|coa|disconnect/.test(normalizedValidationNotes)).toBe(true);
+    expect(
+      /do(?:es)?\s+not\s+forward|not\s+forwarded|strict\s+source\s+validation|effectively\s+`?true`?|always\s+`?true`?/.test(
+        normalizedValidationNotes
+      )
+    ).toBe(true);
 
     for (const apiKey of [
       "radiusAuthenticateWithContinuation",

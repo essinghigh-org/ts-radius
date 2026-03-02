@@ -136,7 +136,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 | `sendAccounting` (`accountingStart` / `accountingInterim` / `accountingStop` / `accountingOn` / `accountingOff`) | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy` | Uses `accountingPort` (or `port`, default 1813). Helpers map to `Acct-Status-Type` values, including `Accounting-On` and `Accounting-Off`. |
 | `sendCoa` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `dynamicAuthorizationRetryIdentityMode` | `coa_nak` is terminal (no retry). `dynamicAuthorizationRetryIdentityMode: "stable"` reuses one Identifier/Request-Authenticator across attempts. |
 | `sendDisconnect` | ✅ Retries up to `retry.maxAttempts` on: `timeout`, `malformed_response`, `identifier_mismatch`, `authenticator_mismatch`, `unknown_code` | `validateResponseSource`, `responseLengthValidationPolicy`, `responseMessageAuthenticatorPolicy`, `dynamicAuthorizationRetryIdentityMode` | `disconnect_nak` is terminal (no retry). Same retry identity behavior as CoA. |
-| health probes (`failover` / background checks) | 🚫 `retry.*` is not used for probe calls (single probe attempt per host per cycle) | `healthCheckProbeMode`, `healthCheckTimeoutMs`, `validateResponseSource`; auth probes also use `authMethod`, `chapId`, `chapChallenge` | `healthCheckProbeMode: "status-server"` first uses `radiusStatusServerProbe`; non-healthy results/errors fall back to auth probes for compatibility. Probe paths currently use strict length handling (no `responseLengthValidationPolicy` forwarding). |
+| health probes (`failover` / background checks) | 🚫 `retry.*` is not used for probe calls (single probe attempt per host per cycle) | `healthCheckProbeMode`, `healthCheckTimeoutMs`; auth/status-server probe path applies `validateResponseSource`, `authMethod`, `chapId`, `chapChallenge` | `healthCheckProbeMode: "status-server"` first uses `radiusStatusServerProbe`; non-healthy results/errors fall back to auth probes for compatibility. Accounting/CoA/Disconnect timeout probe paths currently do not forward `validateResponseSource` (they use protocol default strict source validation, effectively `true`). Probe paths currently use strict length handling (no `responseLengthValidationPolicy` forwarding). |
 
 ## Feature parity highlights
 
@@ -151,6 +151,7 @@ import { radiusStatusServerProbe } from "ts-radius-client";
 ### Validation policy notes
 
 - `validateResponseSource` defaults to `true` and is enforced for all top-level client operations.
+- Health-probe caveat: auth/status-server probe paths forward `validateResponseSource`, but accounting/CoA/disconnect timeout probe paths currently do not forward this flag and therefore use default strict source validation (`true`).
 - `responseMessageAuthenticatorPolicy` affects Access responses (authentication and auth health probes):
   - `compatibility`: warn on invalid Message-Authenticator and continue.
   - `strict`: reject missing/invalid Message-Authenticator as `malformed_response`.
