@@ -6,6 +6,9 @@ import { isIP, SocketAddress } from "node:net";
 import type {
   Logger,
   ParsedRadiusAttribute,
+  RadiusChallengeContext,
+  RadiusChallengeContinuationOptions,
+  RadiusChallengeResult,
   RadiusAccountingRequest,
   RadiusSessionAccountingStatusType,
   RadiusAccountingStatusType,
@@ -474,11 +477,177 @@ function mapErrorCauseSymbol(errorCause: number | undefined): RadiusErrorCauseSy
 
 const MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE = 80;
 const MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH = 18;
+const DEFAULT_MAX_CHALLENGE_ROUNDS = 3;
+
+interface AccessRequestContinuation {
+  stateHex?: string;
+  proxyStateHex?: string[];
+}
 
 interface MessageAuthenticatorValidationResult {
   present: boolean;
   valid: boolean;
   reason?: string;
+}
+
+function normalizeHexValue(value: string, allowEmpty: boolean = false): string | null {
+  const normalized = value.trim().toLowerCase();
+
+  if (normalized.length === 0) {
+    return allowEmpty ? "" : null;
+  }
+
+  if (normalized.length % 2 !== 0) {
+    return null;
+  }
+
+  if (!/^[0-9a-f]+$/.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function normalizeMaxChallengeRounds(value: number | undefined): number {
+  if (!Number.isInteger(value) || value === undefined || value < 1) {
+    return DEFAULT_MAX_CHALLENGE_ROUNDS;
+  }
+
+  return value;
+}
+
+function extractAttributeHexValues(
+  attributes: ParsedRadiusAttribute[] | undefined,
+  attributeId: number
+): string[] {
+  if (!attributes) {
+    return [];
+  }
+
+  return attributes
+    .filter((attribute) => attribute.id === attributeId)
+    .map((attribute) => attribute.raw);
+}
+
+function normalizeChallengeContext(context: RadiusChallengeContext): RadiusChallengeContext | null {
+  const username = typeof context.username === "string"
+    ? context.username.trim()
+    : "";
+
+  if (username.length === 0) {
+    return null;
+  }
+
+  if (!Number.isInteger(context.round) || context.round < 1) {
+    return null;
+  }
+
+  if (!Number.isInteger(context.maxRounds) || context.maxRounds < 1 || context.round > context.maxRounds) {
+    return null;
+  }
+
+  const normalizedState = normalizeHexValue(context.state);
+  if (normalizedState === null) {
+    return null;
+  }
+
+  if (!Array.isArray(context.proxyState)) {
+    return null;
+  }
+
+  const normalizedProxyState: string[] = [];
+  for (const proxyStateValue of context.proxyState) {
+    if (typeof proxyStateValue !== "string") {
+      return null;
+    }
+
+    const normalizedProxyStateValue = normalizeHexValue(proxyStateValue, true);
+    if (normalizedProxyStateValue === null) {
+      return null;
+    }
+
+    normalizedProxyState.push(normalizedProxyStateValue);
+  }
+
+  return {
+    username,
+    round: context.round,
+    maxRounds: context.maxRounds,
+    state: normalizedState,
+    proxyState: normalizedProxyState,
+  };
+}
+
+function toMalformedChallengeContextResult(result: RadiusResult, logger?: Logger): RadiusChallengeResult {
+  if (logger) {
+    logger.warn("[radius] malformed Access-Challenge continuation context");
+  }
+
+  return {
+    ...result,
+    error: "malformed_challenge_context",
+    challenge: undefined,
+  };
+}
+
+function toChallengeAwareResult(
+  result: RadiusResult,
+  username: string,
+  maxRounds: number,
+  previousContext: RadiusChallengeContext | undefined,
+  logger?: Logger
+): RadiusChallengeResult {
+  if (result.error !== "access_challenge") {
+    return { ...result };
+  }
+
+  const stateValues = extractAttributeHexValues(result.attributes, 24);
+  if (stateValues.length !== 1) {
+    return toMalformedChallengeContextResult(result, logger);
+  }
+
+  const normalizedState = normalizeHexValue(stateValues[0] ?? "");
+  if (normalizedState === null) {
+    return toMalformedChallengeContextResult(result, logger);
+  }
+
+  const proxyStateValues = extractAttributeHexValues(result.attributes, 33);
+  const normalizedProxyStateValues: string[] = [];
+  for (const proxyStateValue of proxyStateValues) {
+    const normalizedProxyStateValue = normalizeHexValue(proxyStateValue, true);
+    if (normalizedProxyStateValue === null) {
+      return toMalformedChallengeContextResult(result, logger);
+    }
+    normalizedProxyStateValues.push(normalizedProxyStateValue);
+  }
+
+  const nextRound = (previousContext?.round ?? 0) + 1;
+  if (nextRound > maxRounds) {
+    if (logger) {
+      logger.warn("[radius] Access-Challenge continuation max rounds exceeded", {
+        maxRounds,
+        currentRound: previousContext?.round ?? 0,
+        nextRound,
+      });
+    }
+
+    return {
+      ...result,
+      error: "challenge_round_limit_exceeded",
+      challenge: undefined,
+    };
+  }
+
+  return {
+    ...result,
+    challenge: {
+      username,
+      round: nextRound,
+      maxRounds,
+      state: normalizedState,
+      proxyState: normalizedProxyStateValues,
+    },
+  };
 }
 
 function normalizeHostValue(host: string): string {
@@ -682,12 +851,13 @@ function validateResponseMessageAuthenticator(
   return { present: true, valid: true };
 }
 
-export async function radiusAuthenticate(
+async function radiusAuthenticateRequest(
   host: string,
   username: string,
   password: string,
   options: RadiusProtocolOptions,
-  logger?: Logger
+  logger?: Logger,
+  continuation?: AccessRequestContinuation
 ): Promise<RadiusResult> {
   const secret = options.secret;
   if (!secret) {
@@ -739,6 +909,14 @@ export async function radiusAuthenticate(
       prev = xored.subarray(b * 16, b * 16 + 16);
     }
     attrs.push(Buffer.concat([Buffer.from([2, xored.length + 2]), xored]));
+
+    if (continuation?.stateHex !== undefined) {
+      attrs.push(encodeRadiusAttribute(24, Buffer.from(continuation.stateHex, "hex")));
+    }
+
+    for (const proxyStateHex of continuation?.proxyStateHex ?? []) {
+      attrs.push(encodeRadiusAttribute(33, Buffer.from(proxyStateHex, "hex")));
+    }
 
     // NAS-IP-Address (type 4) - optional, set to 127.0.0.1
     const nasIp = Buffer.from([127, 0, 0, 1]);
@@ -978,6 +1156,68 @@ export async function radiusAuthenticate(
       }
     });
   });
+}
+
+export async function radiusAuthenticate(
+  host: string,
+  username: string,
+  password: string,
+  options: RadiusProtocolOptions,
+  logger?: Logger
+): Promise<RadiusResult> {
+  return radiusAuthenticateRequest(host, username, password, options, logger);
+}
+
+export async function radiusAuthenticateWithContinuation(
+  host: string,
+  username: string,
+  password: string,
+  options: RadiusProtocolOptions,
+  logger?: Logger,
+  continuationOptions?: RadiusChallengeContinuationOptions
+): Promise<RadiusChallengeResult> {
+  const maxRounds = normalizeMaxChallengeRounds(continuationOptions?.maxChallengeRounds);
+  const result = await radiusAuthenticateRequest(host, username, password, options, logger);
+
+  return toChallengeAwareResult(result, username, maxRounds, undefined, logger);
+}
+
+export async function radiusContinueAuthenticate(
+  host: string,
+  password: string,
+  context: RadiusChallengeContext,
+  options: RadiusProtocolOptions,
+  logger?: Logger
+): Promise<RadiusChallengeResult> {
+  const normalizedContext = normalizeChallengeContext(context);
+  if (!normalizedContext) {
+    return toMalformedChallengeContextResult({ ok: false, error: "malformed_challenge_context" }, logger);
+  }
+
+  if (normalizedContext.round > normalizedContext.maxRounds) {
+    if (logger) {
+      logger.warn("[radius] Access-Challenge continuation blocked by max rounds safeguard", {
+        round: normalizedContext.round,
+        maxRounds: normalizedContext.maxRounds,
+      });
+    }
+
+    return { ok: false, error: "challenge_round_limit_exceeded" };
+  }
+
+  const result = await radiusAuthenticateRequest(
+    host,
+    normalizedContext.username,
+    password,
+    options,
+    logger,
+    {
+      stateHex: normalizedContext.state,
+      proxyStateHex: normalizedContext.proxyState,
+    },
+  );
+
+  return toChallengeAwareResult(result, normalizedContext.username, normalizedContext.maxRounds, normalizedContext, logger);
 }
 
 // RFC5997-oriented Status-Server health probe.

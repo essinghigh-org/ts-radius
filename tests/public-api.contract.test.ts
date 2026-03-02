@@ -11,7 +11,15 @@ import {
   validateRadiusAttributeValueLength
 } from '../src/attributes';
 import { RadiusClient } from '../src/client';
-import { radiusAccounting, radiusAuthenticate, radiusCoa, radiusDisconnect, radiusStatusServerProbe } from '../src/protocol';
+import {
+  radiusAccounting,
+  radiusAuthenticate,
+  radiusAuthenticateWithContinuation,
+  radiusContinueAuthenticate,
+  radiusCoa,
+  radiusDisconnect,
+  radiusStatusServerProbe,
+} from '../src/protocol';
 import { ConsoleLogger } from '../src/types';
 
 describe('Public API compatibility contract', () => {
@@ -26,7 +34,9 @@ describe('Public API compatibility contract', () => {
       'isRadiusAttributeType',
       'radiusAccounting',
       'radiusAuthenticate',
+      'radiusAuthenticateWithContinuation',
       'radiusCoa',
+      'radiusContinueAuthenticate',
       'radiusDisconnect',
       'radiusStatusServerProbe',
       'validateRadiusAttributeIntegerValue',
@@ -39,6 +49,8 @@ describe('Public API compatibility contract', () => {
     expect(publicApi.RadiusClient).toBe(RadiusClient);
     expect(publicApi.radiusAccounting).toBe(radiusAccounting);
     expect(publicApi.radiusAuthenticate).toBe(radiusAuthenticate);
+    expect(publicApi.radiusAuthenticateWithContinuation).toBe(radiusAuthenticateWithContinuation);
+    expect(publicApi.radiusContinueAuthenticate).toBe(radiusContinueAuthenticate);
     expect(publicApi.radiusCoa).toBe(radiusCoa);
     expect(publicApi.radiusDisconnect).toBe(radiusDisconnect);
     expect(publicApi.radiusStatusServerProbe).toBe(radiusStatusServerProbe);
