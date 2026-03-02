@@ -601,12 +601,11 @@ function buildDynamicAuthorizationAttributes(request: RadiusDynamicAuthorization
 
 function resolveDynamicAuthorizationRequestIdentity(
   options: RadiusProtocolOptions
-): { identifier: number; requestAuthenticator: Buffer } {
+): { identifier: number; requestAuthenticator?: Buffer } {
   const identity = options.dynamicAuthorizationRequestIdentity;
   if (!identity) {
     return {
       identifier: crypto.randomBytes(1).readUInt8(0),
-      requestAuthenticator: crypto.randomBytes(16),
     };
   }
 
@@ -630,6 +629,67 @@ function resolveDynamicAuthorizationRequestIdentity(
   };
 }
 
+function resolveDynamicAuthorizationEventTimestampWindowSeconds(options: RadiusProtocolOptions): number {
+  const configuredWindow = options.dynamicAuthorizationEventTimestampWindowSeconds;
+  if (configuredWindow === undefined) {
+    return DEFAULT_DYNAMIC_AUTHORIZATION_EVENT_TIMESTAMP_WINDOW_SECONDS;
+  }
+
+  if (!Number.isInteger(configuredWindow) || configuredWindow < 0) {
+    throw new Error("[radius] dynamicAuthorizationEventTimestampWindowSeconds must be a non-negative integer");
+  }
+
+  return configuredWindow;
+}
+
+function validateDynamicAuthorizationEventTimestampFreshness(
+  attributes: ParsedRadiusAttribute[],
+  maxSkewSeconds: number
+): EventTimestampFreshnessValidationResult {
+  const eventTimestampAttributes = attributes.filter((attribute) => attribute.id === EVENT_TIMESTAMP_ATTRIBUTE_TYPE);
+  if (eventTimestampAttributes.length === 0) {
+    return {
+      present: false,
+      valid: true,
+    };
+  }
+
+  const nowMs = Date.now();
+  const maxSkewMs = maxSkewSeconds * 1000;
+
+  for (const eventTimestampAttribute of eventTimestampAttributes) {
+    if (!(eventTimestampAttribute.value instanceof Date)) {
+      return {
+        present: true,
+        valid: false,
+        reason: "event_timestamp_not_date",
+      };
+    }
+
+    const eventTimestampMs = eventTimestampAttribute.value.getTime();
+    if (!Number.isFinite(eventTimestampMs)) {
+      return {
+        present: true,
+        valid: false,
+        reason: "event_timestamp_invalid",
+      };
+    }
+
+    if (Math.abs(nowMs - eventTimestampMs) > maxSkewMs) {
+      return {
+        present: true,
+        valid: false,
+        reason: "event_timestamp_out_of_window",
+      };
+    }
+  }
+
+  return {
+    present: true,
+    valid: true,
+  };
+}
+
 function extractErrorCause(attributes: ParsedRadiusAttribute[]): number | undefined {
   const errorCause = attributes.find((attribute) => attribute.id === ERROR_CAUSE_ATTRIBUTE_TYPE);
   return typeof errorCause?.value === "number" ? errorCause.value : undefined;
@@ -648,6 +708,8 @@ function mapErrorCauseSymbol(errorCause: number | undefined): RadiusErrorCauseSy
 
 const MESSAGE_AUTHENTICATOR_ATTRIBUTE_TYPE = 80;
 const MESSAGE_AUTHENTICATOR_ATTRIBUTE_LENGTH = 18;
+const EVENT_TIMESTAMP_ATTRIBUTE_TYPE = 55;
+const DEFAULT_DYNAMIC_AUTHORIZATION_EVENT_TIMESTAMP_WINDOW_SECONDS = 300;
 const DEFAULT_MAX_CHALLENGE_ROUNDS = 3;
 
 interface AccessRequestContinuation {
@@ -656,6 +718,12 @@ interface AccessRequestContinuation {
 }
 
 interface MessageAuthenticatorValidationResult {
+  present: boolean;
+  valid: boolean;
+  reason?: string;
+}
+
+interface EventTimestampFreshnessValidationResult {
   present: boolean;
   valid: boolean;
   reason?: string;
@@ -1706,6 +1774,8 @@ async function sendDynamicAuthorization(
   const port = options.dynamicAuthorizationPort ?? options.port ?? 3799;
   const timeoutMs = options.timeoutMs ?? 5000;
   const validateResponseSource = options.validateResponseSource !== false;
+  const dynamicAuthorizationEventTimestampWindowSeconds =
+    resolveDynamicAuthorizationEventTimestampWindowSeconds(options);
 
   const attrs = buildDynamicAuthorizationAttributes(request);
   const attrBuf = Buffer.concat(attrs);
@@ -1727,7 +1797,8 @@ async function sendDynamicAuthorization(
     });
   }
 
-  const { identifier: id, requestAuthenticator } = resolveDynamicAuthorizationRequestIdentity(options);
+  const { identifier: id, requestAuthenticator: requestAuthenticatorOverride } =
+    resolveDynamicAuthorizationRequestIdentity(options);
 
   return new Promise((resolve, reject) => {
     const client = createSocketForHost(targetHost);
@@ -1736,9 +1807,15 @@ async function sendDynamicAuthorization(
     header.writeUInt8(codes.request, 0);
     header.writeUInt8(id, 1);
     header.writeUInt16BE(len, 2);
-    requestAuthenticator.copy(header, 4);
 
     const packet = Buffer.concat([header, attrBuf]);
+    const requestAuthenticator = requestAuthenticatorOverride
+      ? Buffer.from(requestAuthenticatorOverride)
+      : crypto
+          .createHash("md5")
+          .update(Buffer.concat([packet, Buffer.from(secret, "utf8")]))
+          .digest();
+    requestAuthenticator.copy(packet, 4);
 
     const timer = setTimeout(() => {
       client.close();
@@ -1778,6 +1855,17 @@ async function sendDynamicAuthorization(
         return;
       }
 
+      const messageAuthenticatorValidation = validateResponseMessageAuthenticator(response, secret, requestAuthenticator);
+      if (messageAuthenticatorValidation.present && !messageAuthenticatorValidation.valid) {
+        if (logger) {
+          logger.warn("[radius] invalid dynamic authorization response Message-Authenticator; dropping response", {
+            reason: messageAuthenticatorValidation.reason,
+          });
+        }
+        resolve({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "malformed_response" });
+        return;
+      }
+
       if (!hasValidResponseAuthenticator(response, requestAuthenticator, secret)) {
         if (logger) logger.warn("[radius] dynamic authorization response authenticator mismatch; dropping response");
         resolve({ ok: false, acknowledged: false, raw: response.toString("hex"), error: "authenticator_mismatch" });
@@ -1797,6 +1885,25 @@ async function sendDynamicAuthorization(
       }
 
       const parsedAttributes = parsedAttributesResult.attributes;
+      const eventTimestampFreshnessValidation = validateDynamicAuthorizationEventTimestampFreshness(
+        parsedAttributes,
+        dynamicAuthorizationEventTimestampWindowSeconds
+      );
+      if (eventTimestampFreshnessValidation.present && !eventTimestampFreshnessValidation.valid) {
+        if (logger) {
+          logger.warn("[radius] dynamic authorization response Event-Timestamp failed freshness validation", {
+            reason: eventTimestampFreshnessValidation.reason,
+            maxSkewSeconds: dynamicAuthorizationEventTimestampWindowSeconds,
+          });
+        }
+        resolve({
+          ok: false,
+          acknowledged: false,
+          raw: response.toString("hex"),
+          error: "malformed_response"
+        });
+        return;
+      }
 
       if (code === codes.ack) {
         resolve({

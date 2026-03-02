@@ -177,6 +177,44 @@ describe("protocol request/options validation", () => {
       ).rejects.toThrow("[radius] dynamic authorization request must include username, sessionId, or at least one attribute")
     ) as unknown as Promise<void>;
     await missingDynamicIdentifiersRejection;
+
+    const negativeEventTimestampWindowRejection = (
+      expect(
+        radiusCoa(
+          "127.0.0.1",
+          {
+            username: "alice"
+          },
+          {
+            secret: "secret",
+            timeoutMs: 10,
+            dynamicAuthorizationEventTimestampWindowSeconds: -1,
+          }
+        )
+      ).rejects.toThrow(
+        "[radius] dynamicAuthorizationEventTimestampWindowSeconds must be a non-negative integer"
+      )
+    ) as unknown as Promise<void>;
+    await negativeEventTimestampWindowRejection;
+
+    const fractionalEventTimestampWindowRejection = (
+      expect(
+        radiusDisconnect(
+          "127.0.0.1",
+          {
+            username: "alice"
+          },
+          {
+            secret: "secret",
+            timeoutMs: 10,
+            dynamicAuthorizationEventTimestampWindowSeconds: 3.14,
+          }
+        )
+      ).rejects.toThrow(
+        "[radius] dynamicAuthorizationEventTimestampWindowSeconds must be a non-negative integer"
+      )
+    ) as unknown as Promise<void>;
+    await fractionalEventTimestampWindowRejection;
   });
 
   test("validates CHAP authentication options", async () => {

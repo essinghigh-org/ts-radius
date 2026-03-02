@@ -382,8 +382,8 @@ export class RadiusClient {
       ? Math.max(1, Math.floor(retryPolicy.maxAttempts))
       : 1;
     const retryIdentityMode = this.getDynamicAuthorizationRetryIdentityMode();
-    const stableRequestIdentity = retryIdentityMode === "stable"
-      ? this.createDynamicAuthorizationRequestIdentity()
+    const stableRequestIdentitiesByHost = retryIdentityMode === "stable"
+      ? new Map<string, RadiusDynamicAuthorizationRequestIdentity>()
       : undefined;
 
     let lastResult: RadiusDynamicAuthorizationResult = {
@@ -405,6 +405,15 @@ export class RadiusClient {
       });
 
       try {
+        let requestIdentity: RadiusDynamicAuthorizationRequestIdentity | undefined;
+        if (stableRequestIdentitiesByHost) {
+          requestIdentity = stableRequestIdentitiesByHost.get(host);
+          if (!requestIdentity) {
+            requestIdentity = this.createDynamicAuthorizationRequestIdentity();
+            stableRequestIdentitiesByHost.set(host, requestIdentity);
+          }
+        }
+
         const protocolOptions: RadiusProtocolOptions = {
           secret: this.config.secret,
           port: dynamicAuthorizationPort,
@@ -413,7 +422,8 @@ export class RadiusClient {
           validateResponseSource: this.config.validateResponseSource,
           responseLengthValidationPolicy: this.config.responseLengthValidationPolicy,
           responseMessageAuthenticatorPolicy: this.config.responseMessageAuthenticatorPolicy,
-          dynamicAuthorizationRequestIdentity: stableRequestIdentity,
+          dynamicAuthorizationEventTimestampWindowSeconds: this.config.dynamicAuthorizationEventTimestampWindowSeconds,
+          dynamicAuthorizationRequestIdentity: requestIdentity,
         };
 
         const result = await protocolCall(host, request, protocolOptions, this.logger);
@@ -700,6 +710,7 @@ export class RadiusClient {
           port: dynamicAuthorizationPort,
           dynamicAuthorizationPort,
           timeoutMs,
+          dynamicAuthorizationEventTimestampWindowSeconds: this.config.dynamicAuthorizationEventTimestampWindowSeconds,
         };
         const request = {
           username: hcUser,

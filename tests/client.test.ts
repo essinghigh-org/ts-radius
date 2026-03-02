@@ -1105,7 +1105,8 @@ describe('RadiusClient Failover', () => {
       healthCheckIntervalMs: 60000,
       validateResponseSource: false,
       responseLengthValidationPolicy: 'allow_trailing_bytes',
-      responseMessageAuthenticatorPolicy: 'strict'
+      responseMessageAuthenticatorPolicy: 'strict',
+      dynamicAuthorizationEventTimestampWindowSeconds: 900,
     }, undefined, { protocol: protocolMock });
 
     try {
@@ -1127,7 +1128,8 @@ describe('RadiusClient Failover', () => {
       expect(call.options).toMatchObject({
         validateResponseSource: false,
         responseLengthValidationPolicy: 'allow_trailing_bytes',
-        responseMessageAuthenticatorPolicy: 'strict'
+        responseMessageAuthenticatorPolicy: 'strict',
+        dynamicAuthorizationEventTimestampWindowSeconds: 900,
       });
     } finally {
       forwardingClient.shutdown();
@@ -1167,7 +1169,8 @@ describe('RadiusClient Failover', () => {
       healthCheckIntervalMs: 60000,
       validateResponseSource: false,
       responseLengthValidationPolicy: 'allow_trailing_bytes',
-      responseMessageAuthenticatorPolicy: 'strict'
+      responseMessageAuthenticatorPolicy: 'strict',
+      dynamicAuthorizationEventTimestampWindowSeconds: 900,
     }, undefined, { protocol: protocolMock });
 
     try {
@@ -1189,7 +1192,8 @@ describe('RadiusClient Failover', () => {
       expect(call.options).toMatchObject({
         validateResponseSource: false,
         responseLengthValidationPolicy: 'allow_trailing_bytes',
-        responseMessageAuthenticatorPolicy: 'strict'
+        responseMessageAuthenticatorPolicy: 'strict',
+        dynamicAuthorizationEventTimestampWindowSeconds: 900,
       });
     } finally {
       forwardingClient.shutdown();
@@ -1449,7 +1453,7 @@ describe('RadiusClient Failover', () => {
     retryClient.shutdown();
   });
 
-  test('sendCoa retries reuse the same transaction identity across failover when stable identity mode is enabled', async () => {
+  test('sendCoa stable identity mode rotates transaction identity after failover to a different host', async () => {
     const retryClient = new RadiusClient({
       ...config,
       hosts: ['10.0.0.1', '10.0.0.2'],
@@ -1488,14 +1492,66 @@ describe('RadiusClient Failover', () => {
     expect(identities).toHaveLength(2);
 
     const firstIdentity = identities[0];
-    if (!firstIdentity) {
-      throw new Error('Expected first CoA retry identity to be defined');
+    const secondIdentity = identities[1];
+    if (!firstIdentity || !secondIdentity) {
+      throw new Error('Expected CoA retry identities to be defined for both hosts');
     }
 
-    for (const identity of identities.slice(1)) {
-      expect(identity.identifier).toBe(firstIdentity.identifier);
-      expect(identity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
+    const identityIsReusedAcrossFailover =
+      secondIdentity.identifier === firstIdentity.identifier
+      && secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator);
+
+    expect(identityIsReusedAcrossFailover).toBe(false);
+
+    retryClient.shutdown();
+  });
+
+  test('sendCoa stable identity mode keeps transaction identity across retries to the same host', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      dynamicAuthorizationRetryIdentityMode: 'stable',
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    responsiveCoaHosts = new Set(['10.0.0.1']);
+    coaCalls = [];
+    coaResponseBySessionId = new Map([
+      ['coa-stable-same-host', [
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: true, acknowledged: true }
+      ]]
+    ]);
+
+    const result = await retryClient.sendCoa({
+      username: 'alice',
+      sessionId: 'coa-stable-same-host'
+    });
+
+    const userCalls = coaCalls.filter((call) => call.request.sessionId === 'coa-stable-same-host');
+    const identities = userCalls
+      .map((call) => call.options.dynamicAuthorizationRequestIdentity)
+      .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined);
+
+    expect(result.ok).toBe(true);
+    expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.1']);
+    expect(identities).toHaveLength(2);
+
+    const firstIdentity = identities[0];
+    const secondIdentity = identities[1];
+    if (!firstIdentity || !secondIdentity) {
+      throw new Error('Expected CoA retry identities to be defined for same-host retries');
     }
+
+    expect(secondIdentity.identifier).toBe(firstIdentity.identifier);
+    expect(secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
 
     retryClient.shutdown();
   });
@@ -1589,7 +1645,7 @@ describe('RadiusClient Failover', () => {
     });
   }
 
-  test('sendDisconnect retries reuse the same transaction identity across failover when stable identity mode is enabled', async () => {
+  test('sendDisconnect stable identity mode rotates transaction identity after failover to a different host', async () => {
     const retryClient = new RadiusClient({
       ...config,
       hosts: ['10.0.0.1', '10.0.0.2'],
@@ -1628,14 +1684,66 @@ describe('RadiusClient Failover', () => {
     expect(identities).toHaveLength(2);
 
     const firstIdentity = identities[0];
-    if (!firstIdentity) {
-      throw new Error('Expected first Disconnect retry identity to be defined');
+    const secondIdentity = identities[1];
+    if (!firstIdentity || !secondIdentity) {
+      throw new Error('Expected Disconnect retry identities to be defined for both hosts');
     }
 
-    for (const identity of identities.slice(1)) {
-      expect(identity.identifier).toBe(firstIdentity.identifier);
-      expect(identity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
+    const identityIsReusedAcrossFailover =
+      secondIdentity.identifier === firstIdentity.identifier
+      && secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator);
+
+    expect(identityIsReusedAcrossFailover).toBe(false);
+
+    retryClient.shutdown();
+  });
+
+  test('sendDisconnect stable identity mode keeps transaction identity across retries to the same host', async () => {
+    const retryClient = new RadiusClient({
+      ...config,
+      hosts: ['10.0.0.1'],
+      healthCheckIntervalMs: 60000,
+      dynamicAuthorizationRetryIdentityMode: 'stable',
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        backoffMultiplier: 1,
+        maxDelayMs: 1,
+        jitterRatio: 0
+      }
+    }, undefined, { protocol: protocolMock });
+
+    responsiveDisconnectHosts = new Set(['10.0.0.1']);
+    disconnectCalls = [];
+    disconnectResponseBySessionId = new Map([
+      ['disconnect-stable-same-host', [
+        { ok: false, acknowledged: false, error: 'timeout' },
+        { ok: true, acknowledged: true }
+      ]]
+    ]);
+
+    const result = await retryClient.sendDisconnect({
+      username: 'alice',
+      sessionId: 'disconnect-stable-same-host'
+    });
+
+    const userCalls = disconnectCalls.filter((call) => call.request.sessionId === 'disconnect-stable-same-host');
+    const identities = userCalls
+      .map((call) => call.options.dynamicAuthorizationRequestIdentity)
+      .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined);
+
+    expect(result.ok).toBe(true);
+    expect(userCalls.map((call) => call.host)).toEqual(['10.0.0.1', '10.0.0.1']);
+    expect(identities).toHaveLength(2);
+
+    const firstIdentity = identities[0];
+    const secondIdentity = identities[1];
+    if (!firstIdentity || !secondIdentity) {
+      throw new Error('Expected Disconnect retry identities to be defined for same-host retries');
     }
+
+    expect(secondIdentity.identifier).toBe(firstIdentity.identifier);
+    expect(secondIdentity.requestAuthenticator.equals(firstIdentity.requestAuthenticator)).toBe(true);
 
     retryClient.shutdown();
   });

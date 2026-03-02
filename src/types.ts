@@ -176,6 +176,12 @@ export interface RadiusProtocolOptions {
    */
   responseMessageAuthenticatorPolicy?: ResponseMessageAuthenticatorPolicy;
   /**
+   * Max absolute skew in seconds allowed for Event-Timestamp (Type 55)
+   * in dynamic authorization responses when present.
+   * Default: 300 seconds.
+   */
+  dynamicAuthorizationEventTimestampWindowSeconds?: number;
+  /**
    * How response length mismatches are handled.
    * - strict (default): declared packet length must equal UDP datagram length.
    * - allow_trailing_bytes: accept datagrams with extra trailing bytes and parse only declared length.
@@ -273,7 +279,8 @@ export interface RadiusConfig extends RadiusProtocolOptions {
   /**
    * Controls CoA/Disconnect retry identity behavior.
    * - per_attempt (default): each retry attempt uses a new packet identifier/authenticator.
-   * - stable: reuse one packet identifier/authenticator for all retries in a single logical send call.
+   * - stable: retries to the same host reuse one identifier/authenticator;
+   *   failover to a different host uses a new identifier/authenticator.
    */
   dynamicAuthorizationRetryIdentityMode?: DynamicAuthorizationRetryIdentityMode;
 }
