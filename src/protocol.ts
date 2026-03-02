@@ -391,6 +391,37 @@ function buildDynamicAuthorizationAttributes(request: RadiusDynamicAuthorization
   return attrs;
 }
 
+function resolveDynamicAuthorizationRequestIdentity(
+  options: RadiusProtocolOptions
+): { identifier: number; requestAuthenticator: Buffer } {
+  const identity = options.dynamicAuthorizationRequestIdentity;
+  if (!identity) {
+    return {
+      identifier: crypto.randomBytes(1).readUInt8(0),
+      requestAuthenticator: crypto.randomBytes(16),
+    };
+  }
+
+  const { identifier, requestAuthenticator } = identity;
+
+  if (!Number.isInteger(identifier) || identifier < 0 || identifier > 0xff) {
+    throw new Error(
+      "[radius] dynamic authorization request identity.identifier must be an integer between 0 and 255"
+    );
+  }
+
+  if (!Buffer.isBuffer(requestAuthenticator) || requestAuthenticator.length !== 16) {
+    throw new Error(
+      "[radius] dynamic authorization request identity.requestAuthenticator must be a 16-byte Buffer"
+    );
+  }
+
+  return {
+    identifier,
+    requestAuthenticator: Buffer.from(requestAuthenticator)
+  };
+}
+
 function extractErrorCause(attributes: ParsedRadiusAttribute[]): number | undefined {
   const errorCause = attributes.find((attribute) => attribute.id === ERROR_CAUSE_ATTRIBUTE_TYPE);
   return typeof errorCause?.value === "number" ? errorCause.value : undefined;
@@ -1242,8 +1273,7 @@ async function sendDynamicAuthorization(
 
   return new Promise((resolve, reject) => {
     const client = createSocketForHost(targetHost);
-    const id = crypto.randomBytes(1).readUInt8(0);
-    const requestAuthenticator = crypto.randomBytes(16);
+    const { identifier: id, requestAuthenticator } = resolveDynamicAuthorizationRequestIdentity(options);
 
     const header = Buffer.alloc(20);
     header.writeUInt8(codes.request, 0);

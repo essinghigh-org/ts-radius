@@ -168,6 +168,57 @@ describe("CoA/Disconnect protocol", () => {
     }
   });
 
+  test("honors caller-provided dynamic authorization request identity", async () => {
+    const server = await bindServer();
+    const receivedPackets: Buffer[] = [];
+    const fixedIdentifier = 0x4f;
+    const fixedAuthenticator = Buffer.from([
+      0x01, 0x02, 0x03, 0x04,
+      0x05, 0x06, 0x07, 0x08,
+      0x09, 0x0a, 0x0b, 0x0c,
+      0x0d, 0x0e, 0x0f, 0x10
+    ]);
+
+    server.on("message", (msg, rinfo) => {
+      receivedPackets.push(Buffer.from(msg));
+      const response = buildDynamicAuthorizationResponse(msg, sharedSecret, 44);
+      server.send(response, rinfo.port, rinfo.address);
+    });
+
+    try {
+      const result = await radiusCoa(
+        "127.0.0.1",
+        {
+          username: "alice",
+          sessionId: "session-identity-override"
+        },
+        {
+          secret: sharedSecret,
+          port: getServerPort(server),
+          timeoutMs: 500,
+          dynamicAuthorizationRequestIdentity: {
+            identifier: fixedIdentifier,
+            requestAuthenticator: fixedAuthenticator
+          }
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.acknowledged).toBe(true);
+      expect(receivedPackets).toHaveLength(1);
+
+      const requestPacket = receivedPackets[0];
+      if (!requestPacket) {
+        throw new Error("Expected a captured CoA request packet");
+      }
+
+      expect(requestPacket.readUInt8(1)).toBe(fixedIdentifier);
+      expect(requestPacket.subarray(4, 20).equals(fixedAuthenticator)).toBe(true);
+    } finally {
+      await closeSocket(server);
+    }
+  });
+
   test("extracts Error-Cause from CoA-NAK responses", async () => {
     const server = await bindServer();
 
