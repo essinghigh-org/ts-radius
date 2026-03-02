@@ -26,6 +26,7 @@ function discoverPacketFixturePaths(relativeDirectory: string): string[] {
 }
 
 const RFC2869_PACKET_FIXTURES = discoverPacketFixturePaths("protocol/rfc2869/packets");
+const RFC5176_PACKET_FIXTURES = discoverPacketFixturePaths("protocol/rfc5176/packets");
 const RFC6929_PACKET_FIXTURES = discoverPacketFixturePaths("protocol/rfc6929/packets");
 
 function createVendorSpecificFixture(decodedValue: unknown): RadiusPacketFixture {
@@ -65,6 +66,19 @@ describe("Protocol fixture infrastructure", () => {
         expect(RFC6929_PACKET_FIXTURES).toEqual([
             "protocol/rfc6929/packets/access-accept.extended-attribute.json",
             "protocol/rfc6929/packets/access-accept.long-extended-attribute.json",
+        ]);
+    });
+
+    test("discovers all expected RFC5176 packet fixtures", () => {
+        expect(RFC5176_PACKET_FIXTURES).toEqual([
+            "protocol/rfc5176/packets/coa-ack.json",
+            "protocol/rfc5176/packets/coa-nak.error-cause.json",
+            "protocol/rfc5176/packets/coa-nak.error-cause.resources-unavailable.json",
+            "protocol/rfc5176/packets/coa-nak.error-cause.unsupported-attribute.json",
+            "protocol/rfc5176/packets/disconnect-ack.json",
+            "protocol/rfc5176/packets/disconnect-nak.error-cause.administratively-prohibited.json",
+            "protocol/rfc5176/packets/disconnect-nak.error-cause.json",
+            "protocol/rfc5176/packets/disconnect-nak.error-cause.unknown.json",
         ]);
     });
 
@@ -129,6 +143,30 @@ describe("Protocol fixture infrastructure", () => {
         expect(decodedPacket.attributes[0]?.value).toBe(503);
     });
 
+    test("decodes RFC5176 CoA-NAK fixture with Error-Cause 401 (Unsupported Attribute)", () => {
+        const fixture = loadRadiusPacketFixture(
+            "protocol/rfc5176/packets/coa-nak.error-cause.unsupported-attribute.json",
+        );
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(45);
+        expect(decodedPacket.attributes[0]?.name).toBe("Error-Cause");
+        expect(decodedPacket.attributes[0]?.value).toBe(401);
+    });
+
+    test("decodes RFC5176 CoA-NAK fixture with Error-Cause 506 (Resources Unavailable)", () => {
+        const fixture = loadRadiusPacketFixture(
+            "protocol/rfc5176/packets/coa-nak.error-cause.resources-unavailable.json",
+        );
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(45);
+        expect(decodedPacket.attributes[0]?.name).toBe("Error-Cause");
+        expect(decodedPacket.attributes[0]?.value).toBe(506);
+    });
+
     test("decodes RFC5176 Disconnect-ACK fixture deterministically", () => {
         const fixture = loadRadiusPacketFixture("protocol/rfc5176/packets/disconnect-ack.json");
         const packet = hexToBuffer(fixture.packetHex);
@@ -147,6 +185,28 @@ describe("Protocol fixture infrastructure", () => {
         expect(decodedPacket.code).toBe(42);
         expect(decodedPacket.attributes[0]?.name).toBe("Error-Cause");
         expect(decodedPacket.attributes[0]?.value).toBe(504);
+    });
+
+    test("decodes RFC5176 Disconnect-NAK fixture with Error-Cause 501 (Administratively Prohibited)", () => {
+        const fixture = loadRadiusPacketFixture(
+            "protocol/rfc5176/packets/disconnect-nak.error-cause.administratively-prohibited.json",
+        );
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(42);
+        expect(decodedPacket.attributes[0]?.name).toBe("Error-Cause");
+        expect(decodedPacket.attributes[0]?.value).toBe(501);
+    });
+
+    test("decodes RFC5176 Disconnect-NAK fixture with unknown Error-Cause value", () => {
+        const fixture = loadRadiusPacketFixture("protocol/rfc5176/packets/disconnect-nak.error-cause.unknown.json");
+        const packet = hexToBuffer(fixture.packetHex);
+
+        const decodedPacket = assertPacketMatchesFixture(packet, fixture);
+        expect(decodedPacket.code).toBe(42);
+        expect(decodedPacket.attributes[0]?.name).toBe("Error-Cause");
+        expect(decodedPacket.attributes[0]?.value).toBe(799);
     });
 
     test("rejects fixture paths outside tests/fixtures", () => {
