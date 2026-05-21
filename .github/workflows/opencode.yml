@@ -11,13 +11,27 @@ on:
 jobs:
   opencode:
     if: |
-      github.event_name == 'pull_request' ||
-      contains(github.event.comment.body, '/oc') ||
-      contains(github.event.comment.body, '/opencode')
+      (
+        github.event_name == 'pull_request' &&
+        (
+          github.event.pull_request.head.repo.full_name == github.repository ||
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+        )
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+        (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode'))
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+        (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode'))
+      )
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
     steps:
@@ -27,7 +41,7 @@ jobs:
           persist-credentials: false
 
       - name: Run opencode
-        uses: anomalyco/opencode/github@latest
+        uses: anomalyco/opencode/github@2c14fc5586fe0b88e5c04732d2e846769cc35671
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         with:
